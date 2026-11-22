@@ -1,0 +1,60 @@
+[package]
+name = "rs-mmap"
+description = "Small pure-Rust memory-mapping crate with safe typed mappings and a read-only compatibility wrapper"
+readme = "README.md"
+repository = "https://github.com/codixor/rust-misc"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+version.workspace = true
+keywords = ["mmap", "memmap", "bytes", "io"]
+categories = ["filesystem", "memory-management"]
+
+[lib]
+name = "rs_mmap"
+
+[dependencies]
+thiserror.workspace = true
+zerocopy = { workspace = true, optional = true }
+bytemuck = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive", "std"], optional = true }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows = { workspace = true, features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_IO",
+  "Win32_System_Memory",
+  "Win32_System_SystemInformation",
+] }
+
+[dev-dependencies]
+tempfile.workspace = true
+serde_json = { workspace = true, features = ["std"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
+workspace = true
+features = ["rt", "fs", "io-util", "macros"]
+optional = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion.workspace = true
+
+[features]
+default = []
+huge-pages = []
+numa = []
+async = ["dep:tokio"]
+zerocopy-views = ["dep:zerocopy", "dep:bytemuck"]
+serde-support = ["dep:serde"]
+
+[[bench]]
+name = "mmap_core"
+harness = false
+
+[lints]
+workspace = true
