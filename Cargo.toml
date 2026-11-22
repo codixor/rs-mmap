@@ -40,6 +40,9 @@ windows = { version = "0.62.2", features = [
 tempfile = "3.27.0"
 serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
 version = "1.52.1"
 default-features = false
@@ -48,6 +51,7 @@ optional = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+memchr = "2.8"
 
 [features]
 default = []
@@ -66,6 +70,10 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [[bench]]
 name = "compare"
+harness = false
+
+[[bench]]
+name = "log_1gb"
 harness = false
 
 [lints.clippy]

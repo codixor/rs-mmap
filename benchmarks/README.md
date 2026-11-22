@@ -1,5 +1,7 @@
 # rs-mmap compared with memmap2 0.9.12
 
+For a fully written 1 GB log, see [line counts, tail reads, random lookups and peak process memory](log-1gb/README.md).
+
 On this Intel Core i9-9820X, the Windows implementation won three of five workloads in both runs. The WSL2 runs did not establish a repeatable advantage for either implementation. The crate remains unpublished.
 
 Each number below is the median paired speedup under the repository's release settings, calculated as memmap2 elapsed time divided by rs-mmap elapsed time. A value above 1 favors rs-mmap.

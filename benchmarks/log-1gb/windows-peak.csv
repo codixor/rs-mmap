@@ -1,0 +1,4 @@
+case,setup_peak_bytes,process_peak_bytes
+count_lines_full,7143424,1006133248
+count_lines_4m_windows,6537216,9719808
+open_tail_last_100,6537216,6537216
