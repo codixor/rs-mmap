@@ -1,107 +1,39 @@
 # rs-mmap
 
-`rs-mmap` is the workspace source-of-truth memory-mapping crate.
+A Rust crate for typed memory mappings, checked subranges, and independently owned read-only file views. Cargo publication is disabled during performance evaluation.
 
-It now owns the integrated safe mapping backend directly instead of delegating
-to `memmap2` or carrying a separate donor crate.
+## Repeated file windows
 
-## Public Surface
-
-The crate now has two layers:
-
-- compatibility surface:
-  - `ReadOnlyMmap::open(...)`
-  - `ReadOnlyMmap::from_bytes(...)`
-  - `ReadOnlyMmap::from_vec(...)`
-  - `slice(...)`, `slice_from(...)`, `slice_to(...)`
-- typed mapping surface:
-  - `Mmap<ReadOnly>`
-  - `Mmap<ReadWrite>`
-  - `MmapOptions::new().path(...).map_readonly()`
-  - `MmapOptions::new().path(...).map_readwrite()`
-  - `MmapOptions::new().path(...).offset(...).len(...).open()`
-
-Additive low-level helpers are also available:
-
-- `Protection`
-- `MemoryAdvice`
-- `HugePageSize`
-- `FileLock`
-- `MappingMode` on Unix
-- `AsyncMmap` behind the `async` feature
-- NUMA helpers behind the `numa` feature
-
-Additional optional feature gates:
-
-- `zerocopy-views`
-  - adds `ZeroCopyView`
-  - adds `view(...)` / `view_slice(...)` on `ReadOnlyMmap`, `MmapSlice`, and
-    typed mappings
-  - adds `view_mut(...)` / `view_slice_mut(...)` on `Mmap<ReadWrite>`
-- `serde-support`
-  - adds `serde::{Serialize, Deserialize}` for the public configuration/value
-    types such as `MmapOptions`, `Protection`, `MemoryAdvice`,
-    `HugePageSize`, and `LockType`
-
-## Platform Model
-
-- native targets use the integrated platform backend in `src/platform`
-- `wasm32` keeps the in-memory compatibility surface and returns a typed
-  unsupported-platform error for file-backed mappings
-- subrange mapping stays supported through aligned platform mappings, so
-  `offset(...).len(...)` keeps working on the public builder surface
-
-## Simple Example
+`ReadOnlyFile` accepts an open file and checks each requested range against its length. Windows creates one file-mapping object and reuses it across views. Unix maps each range with `memmap2`. Each view unmaps independently and can outlive its source.
 
 ```rust
-use rs_mmap::{MmapOptions, ReadOnlyMmap};
-use std::sync::Arc;
+use rs_mmap::ReadOnlyFile;
+use std::fs::File;
 
-let mapped = ReadOnlyMmap::from_bytes(Arc::<[u8]>::from(*b"hello"));
-assert_eq!(mapped.as_slice(), b"hello");
-
-#[cfg(not(target_arch = "wasm32"))]
-let _typed = MmapOptions::new()
-    .path("data.bin")
-    .offset(128)
-    .len(4096)
-    .map_readonly();
-```
-
-## Optional Zero-Copy Views
-
-```rust
-#[cfg(feature = "zerocopy-views")]
-{
-    use rs_mmap::ReadOnlyMmap;
-
-    let mapped = ReadOnlyMmap::from_vec(0x1234_5678_u32.to_ne_bytes().to_vec());
-    let value = mapped.view::<u32>()?;
-    assert_eq!(*value, 0x1234_5678);
+/// Reads the first four bytes of a stable file.
+///
+/// # Safety
+/// Prevent writes and truncation for the duration of this call.
+unsafe fn header(file: File) -> rs_mmap::Result<[u8; 4]> {
+    // SAFETY: the caller keeps the file stable. Both handles are local.
+    let source = unsafe { ReadOnlyFile::new(file)? };
+    let view = source.view(0, 4)?;
+    Ok([view[0], view[1], view[2], view[3]])
 }
-# Ok::<(), rs_mmap::MmapError>(())
 ```
 
-## Examples
+Prevent modifications and truncation until the source and its last view have been dropped. If a complete file is already mapped and a borrowed range is sufficient, index its byte slice directly. Convert an existing `memmap2::Mmap` with `ReadOnlyMmap::from(map)` to share or slice the original bytes without remapping.
 
-- `examples/from_bytes.rs`
-- `examples/open_file.rs`
-- `examples/slice_view.rs`
+## Other APIs
 
-## Validation
+- `MmapOptions` creates typed read-only and read-write mappings for paths and subranges. File-backed constructors are unsafe because external file access is outside Rust's borrowing rules.
+- `Mmap::<ReadWrite>::anonymous(len)` creates a safe private, zero-filled mapping. `ReadOnlyMmap::from_vec` and `from_bytes` provide shareable in-memory bytes, including on WebAssembly.
+- `zerocopy-views` enables checked typed views, `async` enables the Tokio adapter, and `serde-support` enables serialization of configuration. The original platform-specific huge-page, file-lock and NUMA APIs are included.
 
-- `scripts/validate.sh`
-- `scripts/target-matrix.sh`
-- `cargo bench -p rs-mmap --bench mmap_core -- --sample-size 20`
+## Development
 
-## Benchmarks
+The crate requires Rust 1.95 or later. Local x86-64 GNU/Linux builds use Clang and LLD. Release benchmarks use fat LTO and one codegen unit for both implementations.
 
-The current Criterion surface in `benches/mmap_core.rs` tracks:
+Run `cargo test --locked --all-features` and `cargo clippy --locked --all-features --all-targets -- -D warnings`. Run the paired comparison with `cargo bench --locked --bench compare -- --measure`. The original Criterion byte-container benchmarks remain under `mmap_core`. [Measured results and methodology](benchmarks/README.md)
 
-- `from_vec_4k`
-- `clone_handle_4k`
-- `as_slice_len_4k`
-- `slice_view_checked_len_4k`
-
-This crate stays measurement-driven. We keep low-level complexity only when it
-improves the actual mapping surface or preserves compatibility we rely on.
+The initial commit imports only the `rs-mmap` subtree from [codixor/rust-misc at ae68abb](https://github.com/codixor/rust-misc/tree/ae68abb54c655a8fcc009123fbc31821b82435e4/rs-mmap). The standalone crate integrates [memmap2 0.9.12](https://github.com/RazrFalcon/memmap2-rs) as a dependency. Both projects use the MIT or Apache-2.0 license.

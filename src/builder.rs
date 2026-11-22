@@ -25,6 +25,9 @@ pub struct NoPath;
 pub struct HasPath;
 
 /// Type-safe builder for memory-mapped file operations.
+// Deserialization only constructs options. Mapping validates sizes and file
+// ranges, and the file stability contract is checked by the caller at use.
+#[cfg_attr(feature = "serde-support", allow(clippy::unsafe_derive_deserialize))]
 #[cfg_attr(
     feature = "serde-support",
     derive(serde::Serialize, serde::Deserialize)
@@ -179,8 +182,12 @@ impl MmapOptions<HasPath> {
     /// # Errors
     ///
     /// Returns [`MmapError`] if the configured mapping cannot be created.
-    pub fn open(self) -> Result<ReadOnlyMmap> {
-        self.map_readonly().map(ReadOnlyMmap::from_mmap)
+    ///
+    /// # Safety
+    /// The file must not be modified or truncated while the mapping or any of its views live.
+    pub unsafe fn open(self) -> Result<ReadOnlyMmap> {
+        // SAFETY: open has the same file stability contract.
+        unsafe { self.map_readonly() }.map(ReadOnlyMmap::from_mmap)
     }
 
     /// Creates a read-only typed mapping.
@@ -188,7 +195,10 @@ impl MmapOptions<HasPath> {
     /// # Errors
     ///
     /// Returns [`MmapError`] if the configured mapping cannot be created.
-    pub fn map_readonly(mut self) -> Result<Mmap<ReadOnly>> {
+    ///
+    /// # Safety
+    /// The file must not be modified or truncated while the mapping or any of its views live.
+    pub unsafe fn map_readonly(mut self) -> Result<Mmap<ReadOnly>> {
         self.protection = Protection::READ;
         self.map_internal()
     }
@@ -198,7 +208,10 @@ impl MmapOptions<HasPath> {
     /// # Errors
     ///
     /// Returns [`MmapError`] if the configured mapping cannot be created.
-    pub fn map_readwrite(mut self) -> Result<Mmap<crate::ReadWrite>> {
+    ///
+    /// # Safety
+    /// The mapped bytes must not be accessed through other handles while this mapping lives, and the file must not be truncated.
+    pub unsafe fn map_readwrite(mut self) -> Result<Mmap<crate::ReadWrite>> {
         self.protection = Protection::READ | Protection::WRITE;
         self.map_internal()
     }
@@ -208,13 +221,27 @@ impl MmapOptions<HasPath> {
     /// # Errors
     ///
     /// Returns [`MmapError`] if the configured mapping cannot be created.
-    pub fn map<Mode>(self) -> Result<Mmap<Mode>> {
+    ///
+    /// # Safety
+    /// The protection must permit all accesses exposed by Mode. For file mappings, prevent truncation and conflicting access for the mapping's lifetime.
+    pub unsafe fn map<Mode>(self) -> Result<Mmap<Mode>> {
         self.map_internal()
     }
 
     fn map_internal<Mode>(self) -> Result<Mmap<Mode>> {
         use crate::platform::PlatformMmap;
         use std::fs::OpenOptions;
+
+        if self.len.is_some_and(|len| len > isize::MAX as usize) {
+            return Err(MmapError::InvalidConfiguration(
+                "mapping exceeds the maximum slice length".into(),
+            ));
+        }
+        if self.prefault && !self.protection.can_read() {
+            return Err(MmapError::InvalidConfiguration(
+                "prefault requires read access".into(),
+            ));
+        }
 
         let platform_mmap = if self.anonymous {
             let len = self.len.ok_or_else(|| {
@@ -270,6 +297,13 @@ impl MmapOptions<HasPath> {
                 return Err(MmapError::EmptyMapping);
             }
 
+            if len > isize::MAX as usize {
+                return Err(MmapError::InvalidRange {
+                    offset: self.offset,
+                    len,
+                    file_len,
+                });
+            }
             #[cfg(unix)]
             let platform = if let Some(huge_page_size) = self.huge_pages {
                 PlatformMmap::new_huge(&file, self.offset, len, self.protection, huge_page_size)?
@@ -279,9 +313,9 @@ impl MmapOptions<HasPath> {
 
             #[cfg(windows)]
             let platform = if let Some(huge_page_size) = self.huge_pages {
-                PlatformMmap::new_huge(&file, self.offset, len, self.protection, huge_page_size)?
+                PlatformMmap::new_huge(file, self.offset, len, self.protection, huge_page_size)?
             } else {
-                PlatformMmap::new(&file, self.offset, len, self.protection)?
+                PlatformMmap::new(file, self.offset, len, self.protection)?
             };
 
             #[cfg(not(any(unix, windows)))]

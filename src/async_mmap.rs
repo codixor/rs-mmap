@@ -44,13 +44,18 @@ impl AsyncMmap<ReadOnly> {
     /// ```ignore
     /// let mmap = AsyncMmap::open("data.bin").await?;
     /// ```
-    pub async fn open(path: impl AsRef<Path>) -> Result<Self> {
+    ///
+    /// # Safety
+    /// The file must not be modified or truncated while the mapping or any of its views live. The blocking open may finish after cancellation.
+    pub async unsafe fn open(path: impl AsRef<Path>) -> Result<Self> {
         // Open file on blocking thread pool
         let path = path.as_ref().to_path_buf();
-        let mmap =
-            tokio::task::spawn_blocking(move || MmapOptions::new().path(path).map_readonly())
-                .await
-                .map_err(|e| crate::MmapError::SystemError(format!("Task join error: {}", e)))??;
+        let mmap = tokio::task::spawn_blocking(move || {
+            // SAFETY: the caller guarantees the required file stability.
+            unsafe { MmapOptions::new().path(path).map_readonly() }
+        })
+        .await
+        .map_err(|e| crate::MmapError::SystemError(format!("Task join error: {}", e)))??;
 
         Ok(Self { mmap, position: 0 })
     }
@@ -69,12 +74,17 @@ impl AsyncMmap<ReadWrite> {
     /// ```ignore
     /// let mut mmap = AsyncMmap::open_rw("data.bin").await?;
     /// ```
-    pub async fn open_rw(path: impl AsRef<Path>) -> Result<Self> {
+    ///
+    /// # Safety
+    /// The mapped bytes must not be accessed through other handles while this mapping lives, and the file must not be truncated. The blocking open may finish after cancellation.
+    pub async unsafe fn open_rw(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
-        let mmap =
-            tokio::task::spawn_blocking(move || MmapOptions::new().path(path).map_readwrite())
-                .await
-                .map_err(|e| crate::MmapError::SystemError(format!("Task join error: {}", e)))??;
+        let mmap = tokio::task::spawn_blocking(move || {
+            // SAFETY: the caller guarantees the required file stability.
+            unsafe { MmapOptions::new().path(path).map_readwrite() }
+        })
+        .await
+        .map_err(|e| crate::MmapError::SystemError(format!("Task join error: {}", e)))??;
 
         Ok(Self { mmap, position: 0 })
     }
@@ -210,7 +220,7 @@ mod tests {
         let data = b"Hello, async mmap!";
         let file = create_test_file(data);
 
-        let mut mmap = AsyncMmap::open(file.path()).await.unwrap();
+        let mut mmap = unsafe { AsyncMmap::open(file.path()) }.await.unwrap();
 
         let mut buffer = vec![0u8; data.len()];
         mmap.read_exact(&mut buffer).await.unwrap();
@@ -222,7 +232,7 @@ mod tests {
     async fn test_async_write() {
         let file = create_test_file(&vec![0u8; 1024]);
 
-        let mut mmap = AsyncMmap::open_rw(file.path()).await.unwrap();
+        let mut mmap = unsafe { AsyncMmap::open_rw(file.path()) }.await.unwrap();
 
         let data = b"Written asynchronously!";
         mmap.write_all(data).await.unwrap();
@@ -240,7 +250,7 @@ mod tests {
         let data = b"0123456789";
         let file = create_test_file(data);
 
-        let mut mmap = AsyncMmap::open(file.path()).await.unwrap();
+        let mut mmap = unsafe { AsyncMmap::open(file.path()) }.await.unwrap();
 
         assert_eq!(mmap.position(), 0);
         assert_eq!(mmap.remaining(), data.len());
@@ -257,7 +267,7 @@ mod tests {
         let data = b"Hello, World!";
         let file = create_test_file(data);
 
-        let mut mmap = AsyncMmap::open(file.path()).await.unwrap();
+        let mut mmap = unsafe { AsyncMmap::open(file.path()) }.await.unwrap();
 
         let mut buffer = [0u8; 5];
         mmap.read_exact(&mut buffer).await.unwrap();
@@ -271,7 +281,7 @@ mod tests {
         let data = vec![0u8; 4096];
         let file = create_test_file(&data);
 
-        let mmap = AsyncMmap::open(file.path()).await.unwrap();
+        let mmap = unsafe { AsyncMmap::open(file.path()) }.await.unwrap();
 
         assert_eq!(mmap.len(), 4096);
         assert!(!mmap.is_empty());

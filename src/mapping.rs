@@ -80,6 +80,12 @@ impl Deref for Mmap<ReadOnly> {
 }
 
 impl Mmap<ReadWrite> {
+    /// Allocates a private, zero-filled anonymous mapping.
+    pub fn anonymous(len: usize) -> crate::Result<Self> {
+        // SAFETY: an anonymous mapping has no external file or aliases.
+        unsafe { crate::MmapOptions::new_anonymous(len).map_readwrite() }
+    }
+
     /// Get a mutable slice view of the mapped region
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
         // SAFETY: The PlatformMmap guarantees ptr and len are valid
@@ -91,8 +97,7 @@ impl Mmap<ReadWrite> {
     /// Resize the mapping to a new size.
     ///
     /// On Linux, this uses `mremap()` which can efficiently grow or shrink
-    /// the mapping. On other platforms, this falls back to unmapping and
-    /// remapping, which may change the address.
+    /// the mapping. Other platforms return an unsupported-resize error.
     ///
     /// # Examples
     ///
@@ -112,7 +117,16 @@ impl Mmap<ReadWrite> {
     /// - The new size is zero
     /// - The system cannot allocate the requested size
     /// - The file backing is too small (for file-backed mappings)
-    pub fn resize(&mut self, new_size: usize) -> crate::Result<()> {
+    ///
+    /// # Safety
+    /// For file-backed mappings, the file must cover the entire new extent,
+    /// and the mapping's original access guarantees must hold for that extent.
+    pub unsafe fn resize(&mut self, new_size: usize) -> crate::Result<()> {
+        if new_size > isize::MAX as usize {
+            return Err(crate::MmapError::InvalidConfiguration(
+                "mapping exceeds the maximum slice length".into(),
+            ));
+        }
         self.inner.resize(new_size)
     }
 }
@@ -160,7 +174,8 @@ mod tests {
     #[test]
     fn test_mmap_len() {
         let file = create_test_file(4096, 0x42);
-        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
 
         assert_eq!(mmap.len(), 4096);
         assert!(!mmap.is_empty());
@@ -169,7 +184,8 @@ mod tests {
     #[test]
     fn test_readonly_as_slice() {
         let file = create_test_file(1024, 0x55);
-        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
 
         let slice = mmap.as_slice();
         assert_eq!(slice.len(), 1024);
@@ -181,7 +197,8 @@ mod tests {
     #[test]
     fn test_readonly_deref() {
         let file = create_test_file(2048, 0xAA);
-        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
 
         // Test Deref implementation
         assert_eq!(mmap[0], 0xAA);
@@ -192,10 +209,8 @@ mod tests {
     #[test]
     fn test_readwrite_as_mut_slice() {
         let file = create_test_file(4096, 0x00);
-        let mut mmap = MmapOptions::new()
-            .path(file.path())
-            .map_readwrite()
-            .unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mut mmap = unsafe { MmapOptions::new().path(file.path()).map_readwrite() }.unwrap();
 
         let slice = mmap.as_mut_slice();
         slice[0] = 0xFF;
@@ -210,10 +225,8 @@ mod tests {
     #[test]
     fn test_readwrite_deref_mut() {
         let file = create_test_file(1024, 0x00);
-        let mut mmap = MmapOptions::new()
-            .path(file.path())
-            .map_readwrite()
-            .unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mut mmap = unsafe { MmapOptions::new().path(file.path()).map_readwrite() }.unwrap();
 
         // Test DerefMut implementation
         mmap[0] = 0x11;
@@ -226,10 +239,8 @@ mod tests {
     #[test]
     fn test_readwrite_immutable_access() {
         let file = create_test_file(2048, 0xBB);
-        let mmap = MmapOptions::new()
-            .path(file.path())
-            .map_readwrite()
-            .unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readwrite() }.unwrap();
 
         // ReadWrite should also allow immutable access via Deref
         assert_eq!(mmap[0], 0xBB);
@@ -239,7 +250,8 @@ mod tests {
     #[test]
     fn test_as_ptr() {
         let file = create_test_file(512, 0x33);
-        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
 
         let ptr = mmap.as_ptr();
         assert!(!ptr.is_null());
@@ -253,7 +265,8 @@ mod tests {
     #[test]
     fn test_multiple_reads() {
         let file = create_test_file(8192, 0x77);
-        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
 
         // Multiple immutable borrows should work
         let slice1 = mmap.as_slice();
@@ -266,7 +279,8 @@ mod tests {
     #[test]
     fn test_zero_sized_mapping() {
         let file = create_test_file(0, 0x00);
-        let result = MmapOptions::new().path(file.path()).map_readonly();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let result = unsafe { MmapOptions::new().path(file.path()).map_readonly() };
 
         // Zero-sized mappings should error (platform limitation)
         assert!(result.is_err());
@@ -276,7 +290,8 @@ mod tests {
     fn test_large_mapping() {
         let size = 1024 * 1024; // 1MB
         let file = create_test_file(size, 0x99);
-        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
 
         assert_eq!(mmap.len(), size);
         assert_eq!(mmap[0], 0x99);
@@ -290,7 +305,8 @@ mod tests {
         let path = file.path().to_path_buf();
 
         {
-            let mut mmap = MmapOptions::new().path(&path).map_readwrite().unwrap();
+            // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+            let mut mmap = unsafe { MmapOptions::new().path(&path).map_readwrite() }.unwrap();
 
             mmap[0] = 0xAA;
             mmap[100] = 0xBB;
@@ -298,7 +314,8 @@ mod tests {
         }
 
         // Read back to verify persistence
-        let mmap = MmapOptions::new().path(&path).map_readonly().unwrap();
+        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
+        let mmap = unsafe { MmapOptions::new().path(&path).map_readonly() }.unwrap();
 
         assert_eq!(mmap[0], 0xAA);
         assert_eq!(mmap[100], 0xBB);

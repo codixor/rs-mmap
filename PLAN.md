@@ -1,4 +1,6 @@
-# rs-mmap Plan
+# Original rust-misc integration plan (archived)
+
+This document records the monorepo import. For the standalone crate and its current benchmark, see [README.md](README.md).
 
 Goal: make `rs-mmap` the workspace source-of-truth mapping crate, with a safe
 typed backend, a stable compatibility wrapper for existing callers, explicit

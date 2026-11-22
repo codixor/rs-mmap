@@ -1,8 +1,8 @@
 use std::fs::File;
-use std::os::windows::io::AsRawHandle;
-use std::ptr;
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+use std::{ptr, sync::Arc};
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Memory::{
     CreateFileMappingW, FILE_MAP_EXECUTE, FILE_MAP_READ, FILE_MAP_WRITE, MEM_COMMIT,
     MEM_LARGE_PAGES, MEM_RELEASE, MEM_RESERVE, MEMORY_MAPPED_VIEW_ADDRESS, MapViewOfFile,
@@ -19,42 +19,53 @@ pub struct PlatformMmap {
     map_ptr: *mut u8,
     ptr: *mut u8,
     len: usize,
-    file_mapping: HANDLE,
-    file_backed: bool,
+    // Retain the file itself, including delete-on-close files, until unmapping.
+    file: Option<Arc<File>>,
 }
 
 impl PlatformMmap {
-    pub fn new(file: &File, offset: u64, len: usize, protection: Protection) -> Result<Self> {
+    pub fn new(file: File, offset: u64, len: usize, protection: Protection) -> Result<Self> {
         if len == 0 {
             return Err(MmapError::EmptyMapping);
         }
 
         let file_size = file.metadata()?.len();
-        let (aligned_offset, delta, map_len) = Self::mapping_window(offset, len, file_size)?;
-        let page_protection = Self::protection_to_windows_page(protection);
+        let section = Self::section(&file, protection)?;
+        Self::from_section(&section, Arc::new(file), file_size, offset, len, protection)
+    }
 
-        // SAFETY: The file handle is valid for the duration of the call and we
-        // request a file-mapping object with OS-defined protection flags.
-        let file_mapping = unsafe {
+    pub(crate) fn section(file: &File, protection: Protection) -> Result<OwnedHandle> {
+        // SAFETY: File owns a valid handle; CreateFileMappingW returns an owned section.
+        let section = unsafe {
             CreateFileMappingW(
                 HANDLE(file.as_raw_handle()),
                 None,
-                page_protection,
+                Self::protection_to_windows_page(protection),
                 0,
                 0,
                 None,
             )
-            .map_err(|error| {
-                MmapError::MappingFailed(format!("CreateFileMappingW failed: {error:?}"))
-            })?
-        };
+        }
+        .map_err(|error| MmapError::MappingFailed(error.to_string()))?;
+        // SAFETY: the successful call transferred one CloseHandle obligation.
+        Ok(unsafe { OwnedHandle::from_raw_handle(section.0) })
+    }
 
+    pub(crate) fn from_section(
+        section: &OwnedHandle,
+        file: Arc<File>,
+        file_size: u64,
+        offset: u64,
+        len: usize,
+        protection: Protection,
+    ) -> Result<Self> {
+        let (aligned_offset, delta, map_len) = Self::mapping_window(offset, len, file_size)?;
         let desired_access = Self::protection_to_windows_access(protection);
 
         // SAFETY: We map a validated aligned window from the mapping object.
         let view = unsafe {
             MapViewOfFile(
-                file_mapping,
+                HANDLE(section.as_raw_handle()),
                 windows::Win32::System::Memory::FILE_MAP(desired_access),
                 (aligned_offset >> 32) as u32,
                 (aligned_offset & 0xFFFF_FFFF) as u32,
@@ -63,12 +74,7 @@ impl PlatformMmap {
         };
 
         if view.Value.is_null() {
-            // SAFETY: Closing the handle is safe here because the mapping view
-            // failed and the handle is otherwise unused.
-            unsafe {
-                let _ = CloseHandle(file_mapping);
-            }
-            return Err(MmapError::MappingFailed("MapViewOfFile failed".to_string()));
+            return Err(std::io::Error::last_os_error().into());
         }
 
         let map_ptr = view.Value.cast::<u8>();
@@ -79,8 +85,7 @@ impl PlatformMmap {
             map_ptr,
             ptr,
             len,
-            file_mapping,
-            file_backed: true,
+            file: Some(file),
         })
     }
 
@@ -105,13 +110,12 @@ impl PlatformMmap {
             map_ptr,
             ptr: map_ptr,
             len,
-            file_mapping: HANDLE(std::ptr::null_mut()),
-            file_backed: false,
+            file: None,
         })
     }
 
     pub fn new_huge(
-        file: &File,
+        file: File,
         offset: u64,
         len: usize,
         protection: Protection,
@@ -150,8 +154,7 @@ impl PlatformMmap {
             map_ptr,
             ptr: map_ptr,
             len,
-            file_mapping: HANDLE(std::ptr::null_mut()),
-            file_backed: false,
+            file: None,
         })
     }
 
@@ -269,20 +272,13 @@ impl Drop for PlatformMmap {
         if !self.map_ptr.is_null() {
             // SAFETY: The pointer and drop path match the allocation path.
             unsafe {
-                if self.file_backed {
+                if self.file.is_some() {
                     let _ = UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS {
                         Value: self.map_ptr.cast(),
                     });
                 } else {
                     let _ = VirtualFree(self.map_ptr.cast(), 0, MEM_RELEASE);
                 }
-            }
-        }
-
-        if self.file_backed && !self.file_mapping.is_invalid() {
-            // SAFETY: The mapping handle belongs to this object.
-            unsafe {
-                let _ = CloseHandle(self.file_mapping);
             }
         }
     }

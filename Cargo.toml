@@ -1,12 +1,13 @@
 [package]
 name = "rs-mmap"
-description = "Small pure-Rust memory-mapping crate with safe typed mappings and a read-only compatibility wrapper"
+description = "Typed memory-mapped files and reusable read-only mapping windows"
 readme = "README.md"
-repository = "https://github.com/codixor/rust-misc"
-edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
-version.workspace = true
+repository = "https://github.com/codixor/rs-mmap"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+version = "0.1.0"
+publish = false
 keywords = ["mmap", "memmap", "bytes", "io"]
 categories = ["filesystem", "memory-management"]
 
@@ -14,16 +15,19 @@ categories = ["filesystem", "memory-management"]
 name = "rs_mmap"
 
 [dependencies]
-thiserror.workspace = true
-zerocopy = { workspace = true, optional = true }
-bytemuck = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive", "std"], optional = true }
+thiserror = "2.0.18"
+zerocopy = { version = "0.8.48", default-features = false, optional = true }
+bytemuck = { version = "1.25.0", default-features = false, optional = true }
+serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
+
+[target.'cfg(any(unix, windows))'.dependencies]
+memmap2 = "=0.9.12"
 
 [target.'cfg(unix)'.dependencies]
-libc.workspace = true
+libc = { version = "0.2.185", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = [
+windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Storage_FileSystem",
@@ -33,16 +37,17 @@ windows = { workspace = true, features = [
 ] }
 
 [dev-dependencies]
-tempfile.workspace = true
-serde_json = { workspace = true, features = ["std"] }
+tempfile = "3.27.0"
+serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
-workspace = true
+version = "1.52.1"
+default-features = false
 features = ["rt", "fs", "io-util", "macros"]
 optional = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-criterion.workspace = true
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 
 [features]
 default = []
@@ -56,5 +61,34 @@ serde-support = ["dep:serde"]
 name = "mmap_core"
 harness = false
 
-[lints]
-workspace = true
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[[bench]]
+name = "compare"
+harness = false
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = false
+strip = "symbols"
+panic = "unwind"
+incremental = false
+overflow-checks = false
+
+[profile.min-size]
+inherits = "release"
+opt-level = "z"
+panic = "abort"
+
+[profile.release-debuginfo]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+split-debuginfo = "packed"

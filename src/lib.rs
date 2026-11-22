@@ -17,6 +17,10 @@ mod advice;
 #[cfg(all(feature = "async", not(target_arch = "wasm32")))]
 mod async_mmap;
 mod builder;
+#[cfg(any(unix, windows))]
+mod read_only_file;
+#[cfg(any(unix, windows))]
+pub use read_only_file::{FileView, ReadOnlyFile};
 mod error;
 mod file_lock;
 mod huge_pages;
@@ -59,14 +63,15 @@ pub type Result<T> = std::result::Result<T, MmapError>;
 enum Backing {
     Mapped(Arc<Mmap<ReadOnly>>),
     Owned(Arc<[u8]>),
+    #[cfg(any(unix, windows))]
+    Memmap2(Arc<memmap2::Mmap>),
 }
 
 /// Small read-only byte container backed by either a native memory map or
 /// shared owned bytes.
 ///
-/// `ReadOnlyMmap` stays as the compatibility surface for existing workspace
-/// callers while the crate now uses the integrated safe mapping backend
-/// internally.
+/// Clones share the same bytes. Converting a native memmap2 mapping keeps
+/// its mapped address and gives it the same shared ownership.
 #[derive(Clone)]
 pub struct ReadOnlyMmap {
     backing: Backing,
@@ -79,9 +84,13 @@ impl ReadOnlyMmap {
     /// # Errors
     ///
     /// Returns an error if the file cannot be opened or the mapping fails.
+    ///
+    /// # Safety
+    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        Self::open_options(path, 0, None)
+    pub unsafe fn open(path: impl AsRef<Path>) -> Result<Self> {
+        // SAFETY: the caller guarantees a stable file.
+        unsafe { Self::open_options(path, 0, None) }
     }
 
     /// Opens a file and creates a shared read-only memory mapping for its
@@ -90,8 +99,11 @@ impl ReadOnlyMmap {
     /// # Errors
     ///
     /// Always returns [`MmapError::UnsupportedPlatform`] on `wasm32`.
+    ///
+    /// # Safety
+    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
     #[cfg(target_arch = "wasm32")]
-    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+    pub unsafe fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let _ = path;
         Err(MmapError::UnsupportedPlatform)
     }
@@ -103,13 +115,21 @@ impl ReadOnlyMmap {
     /// Returns [`MmapError`] if the file cannot be opened, the requested
     /// mapping is invalid, or the platform does not support file-backed
     /// mappings.
+    ///
+    /// # Safety
+    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn open_options(path: impl AsRef<Path>, offset: u64, len: Option<usize>) -> Result<Self> {
+    pub unsafe fn open_options(
+        path: impl AsRef<Path>,
+        offset: u64,
+        len: Option<usize>,
+    ) -> Result<Self> {
         let mut builder = MmapOptions::new().path(path).offset(offset);
         if let Some(len) = len {
             builder = builder.len(len);
         }
-        builder.open()
+        // SAFETY: the caller guarantees a stable file.
+        unsafe { builder.open() }
     }
 
     /// Opens a read-only file mapping for the configured byte range.
@@ -117,8 +137,11 @@ impl ReadOnlyMmap {
     /// # Errors
     ///
     /// Always returns [`MmapError::UnsupportedPlatform`] on `wasm32`.
+    ///
+    /// # Safety
+    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
     #[cfg(target_arch = "wasm32")]
-    pub fn open_options(
+    pub unsafe fn open_options(
         path: impl AsRef<std::path::Path>,
         offset: u64,
         len: Option<usize>,
@@ -155,6 +178,8 @@ impl ReadOnlyMmap {
         match &self.backing {
             Backing::Mapped(bytes) => bytes.as_slice(),
             Backing::Owned(bytes) => bytes,
+            #[cfg(any(unix, windows))]
+            Backing::Memmap2(map) => map,
         }
     }
 
@@ -190,5 +215,15 @@ impl Deref for ReadOnlyMmap {
 
     fn deref(&self) -> &Self::Target {
         self.as_slice()
+    }
+}
+
+#[cfg(any(unix, windows))]
+impl From<memmap2::Mmap> for ReadOnlyMmap {
+    /// Shares an existing memmap2 mapping without copying or remapping its bytes.
+    fn from(map: memmap2::Mmap) -> Self {
+        Self {
+            backing: Backing::Memmap2(Arc::new(map)),
+        }
     }
 }

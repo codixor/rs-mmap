@@ -232,7 +232,7 @@ impl PlatformMmap {
 
         let advice_flag = advice.to_unix_advice();
         // SAFETY: `ptr` points to a valid mapped region of `len` bytes.
-        let result = unsafe { libc::madvise(self.ptr.cast(), self.len, advice_flag) };
+        let result = unsafe { libc::madvise(self.map_ptr.cast(), self.map_len, advice_flag) };
         if result != 0 {
             return Err(MmapError::SystemError(format!(
                 "madvise failed: {}",

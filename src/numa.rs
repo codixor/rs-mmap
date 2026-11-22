@@ -51,7 +51,7 @@ impl NumaTopology {
         match fs::read_dir(numa_path) {
             Ok(entries) => {
                 let num_nodes = entries
-                    .filter_map(|e| e.ok())
+                    .filter_map(std::result::Result::ok)
                     .filter(|e| e.file_name().to_string_lossy().starts_with("node"))
                     .count() as u32;
 
@@ -121,14 +121,18 @@ impl NumaBinder {
     /// ```
     #[cfg(target_os = "linux")]
     pub fn bind_memory(ptr: *mut u8, len: usize, policy: NumaPolicy) -> Result<()> {
-        // mbind() syscall number on Linux
-        const SYS_MBIND: i64 = 237;
-
         // NUMA policy flags
         const MPOL_DEFAULT: i32 = 0;
         const MPOL_PREFERRED: i32 = 1;
         const MPOL_BIND: i32 = 2;
         const MPOL_INTERLEAVE: i32 = 3;
+
+        if matches!(policy, NumaPolicy::Bind(NumaNode(n)) | NumaPolicy::Preferred(NumaNode(n)) if n >= 64)
+        {
+            return Err(MmapError::InvalidConfiguration(
+                "NUMA node exceeds the supported mask".into(),
+            ));
+        }
 
         let (mode, nodemask) = match policy {
             NumaPolicy::Default => (MPOL_DEFAULT, 0u64),
@@ -142,11 +146,11 @@ impl NumaBinder {
         // SAFETY: Calling mbind syscall with validated parameters
         let result = unsafe {
             libc::syscall(
-                SYS_MBIND,
-                ptr as *mut libc::c_void,
+                libc::SYS_mbind,
+                ptr.cast::<libc::c_void>(),
                 len,
                 mode,
-                &nodemask as *const u64,
+                std::ptr::from_ref(&nodemask),
                 maxnode,
                 0, // flags
             )
