@@ -22,18 +22,6 @@ pub enum MemoryAdvice {
 
     /// Will need these pages soon
     WillNeed,
-
-    /// Won't need these pages
-    DontNeed,
-
-    /// Mark these pages cold so the kernel can reclaim them sooner (Linux 5.4+).
-    #[cfg(target_os = "linux")]
-    Cold,
-
-    /// Request reclamation of these pages (Linux 5.4+). Later accesses may
-    /// fault the data back in. The kernel may ignore the request.
-    #[cfg(target_os = "linux")]
-    PageOut,
 }
 
 impl Default for MemoryAdvice {

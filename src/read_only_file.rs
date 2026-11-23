@@ -167,8 +167,8 @@ impl FileView {
         self.bytes
     }
 
-    /// Passes a supported access hint to the mapping containing these bytes.
-    /// Destructive hints and platforms without safe advice return an error.
+    /// Passes an access hint to the mapping containing these bytes.
+    /// Platforms without safe advice return an error.
     pub fn advise_range(&self, range: Range<usize>, advice: MemoryAdvice) -> Result<()> {
         let part = self.get(range.clone()).ok_or(MmapError::SliceOutOfBounds {
             len: self.len(),
@@ -184,7 +184,7 @@ impl FileView {
                 MemoryAdvice::Sequential => memmap2::Advice::Sequential,
                 MemoryAdvice::Random => memmap2::Advice::Random,
                 MemoryAdvice::WillNeed => memmap2::Advice::WillNeed,
-                _ => return Err(MmapError::UnsupportedPlatform),
+                MemoryAdvice::Normal => return Ok(()),
             };
             return Ok(map.advise_range(hint, range.start, part.len())?);
         }

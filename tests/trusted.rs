@@ -168,10 +168,7 @@ fn stable_views_accept_view_relative_advice() {
     view.advise_range(13..view.len(), MemoryAdvice::Sequential)
         .unwrap();
     view.advise_range(0..1, MemoryAdvice::WillNeed).unwrap();
-    assert!(matches!(
-        view.advise_range(0..1, MemoryAdvice::DontNeed),
-        Err(MmapError::UnsupportedPlatform)
-    ));
+    view.advise_range(5..9, MemoryAdvice::Random).unwrap();
     assert_eq!(&*view, &data[17..130_018]);
 }
 

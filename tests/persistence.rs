@@ -79,6 +79,62 @@ fn typed_record_reopens_and_create_preserves_existing_files() {
     ));
 }
 
+#[cfg(feature = "zerocopy-views")]
+#[test]
+fn atomic_flush_replaces_the_file_and_keeps_later_flushes_working() {
+    use rs_mmap::MmapStruct;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record");
+    let mut value = MmapStruct::create(&path, [1u32, 2, 3]).unwrap();
+    let earlier = std::fs::File::open(&path).unwrap();
+    value[0] = 7;
+    value.flush_atomic().unwrap();
+    assert_eq!(*MmapStruct::<[u32; 3]>::open(&path).unwrap(), [7, 2, 3]);
+    // Nothing but the record remains in the directory.
+    let names: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["record"]);
+    // A handle opened before the replacement still reads the old file.
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut old = Vec::new();
+        (&earlier).read_to_end(&mut old).unwrap();
+        assert_eq!(old, bytemuck::bytes_of(&[1u32, 2, 3]));
+    }
+    drop(earlier);
+    // In-place and repeated atomic flushes reach the replacement file.
+    value[1] = 8;
+    value.flush().unwrap();
+    assert_eq!(*MmapStruct::<[u32; 3]>::open(&path).unwrap(), [7, 8, 3]);
+    value[2] = 9;
+    value.flush_atomic().unwrap();
+    value.flush_atomic().unwrap();
+    drop(value);
+    assert_eq!(*MmapStruct::<[u32; 3]>::open(&path).unwrap(), [7, 8, 9]);
+}
+
+#[cfg(all(feature = "zerocopy-views", unix))]
+#[test]
+fn atomic_flush_keeps_permissions_and_fails_cleanly() {
+    use rs_mmap::MmapStruct;
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("record");
+    let mut value = MmapStruct::create(&path, 5u64).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    *value = 6;
+    value.flush_atomic().unwrap();
+    let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+    assert_eq!(mode & 0o777, 0o640);
+    // A vanished directory is an error and leaves the record usable in memory.
+    drop(dir);
+    assert!(value.flush_atomic().is_err());
+    assert_eq!(*value, 6);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn kernel_sealed_files_use_direct_mapping() {
