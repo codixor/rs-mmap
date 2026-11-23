@@ -23,8 +23,8 @@ fuzz_target!(|data: &[u8]| {
             let words = view.view_slice::<u32>();
             assert_eq!(words.is_ok(), aligned && expected.len().is_multiple_of(4));
             if let Ok(words) = words {
-                for (word, bytes) in words.iter().zip(expected.chunks_exact(4)) {
-                    assert_eq!(word.to_ne_bytes().as_slice(), bytes);
+                for (word, bytes) in words.iter().zip(expected.as_chunks::<4>().0) {
+                    assert_eq!(word.to_ne_bytes(), *bytes);
                 }
             }
         }
