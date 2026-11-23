@@ -1,8 +1,10 @@
-# rs-mmap compared with memmap2 0.9.12
+# Historical comparison with memmap2 0.9.12
+
+These are measurements of the original native backend. Use the [v0.2.3 checkout](https://github.com/codixor/rs-mmap/tree/v0.2.3) for the harness and reproduction commands. Ordinary file reads changed to snapshots in 0.3.
 
 For a fully written 1 GB log, see [line counts, tail reads, random lookups and peak process memory](log-1gb/README.md).
 
-On this Intel Core i9-9820X, the Windows implementation won three of five workloads in both runs. The WSL2 runs did not establish a repeatable advantage for either implementation. The crate remains unpublished.
+On this Intel Core i9-9820X, the Windows implementation won three of five workloads in both runs. The WSL2 runs did not establish a repeatable advantage for either implementation.
 
 Each number below is the median paired speedup under the repository's release settings, calculated as memmap2 elapsed time divided by rs-mmap elapsed time. A value above 1 favors rs-mmap.
 

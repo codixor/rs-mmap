@@ -1,22 +1,19 @@
-use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
+use crate::{
+    CopyOnWrite, MemoryAdvice, Mmap, MmapError, ReadOnly, ReadOnlyMmap, ReadWrite, Result,
+};
+use std::{
+    marker::PhantomData,
+    path::{Path, PathBuf},
+};
 
-#[cfg(unix)]
-use crate::MappingMode;
-use crate::advice::MemoryAdvice;
-use crate::huge_pages::HugePageSize;
-use crate::protection::Protection;
-use crate::{MmapError, ReadOnly, ReadOnlyMmap, Result, mmap::Mmap};
-
-/// Type state for [`MmapOptions`] before a path has been set.
+/// Builder without a selected source.
 #[cfg_attr(
     feature = "serde-support",
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoPath;
-
-/// Type state for [`MmapOptions`] after a path has been set.
+/// Builder with a file or anonymous source.
 #[cfg_attr(
     feature = "serde-support",
     derive(serde::Serialize, serde::Deserialize)
@@ -24,317 +21,206 @@ pub struct NoPath;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct HasPath;
 
-/// Type-safe builder for memory-mapped file operations.
-// Deserialization only constructs options. Mapping validates sizes and file
-// ranges, and the file stability contract is checked by the caller at use.
-#[cfg_attr(feature = "serde-support", allow(clippy::unsafe_derive_deserialize))]
+/// Selects a byte range and its access mode.
 #[cfg_attr(
     feature = "serde-support",
-    derive(serde::Serialize, serde::Deserialize)
+    derive(serde::Serialize, serde::Deserialize),
+    serde(deny_unknown_fields)
 )]
 #[derive(Debug, Clone)]
 pub struct MmapOptions<State = NoPath> {
     path: Option<PathBuf>,
-    protection: Protection,
     offset: u64,
     len: Option<usize>,
     advice: MemoryAdvice,
-    anonymous: bool,
     prefault: bool,
-    huge_pages: Option<HugePageSize>,
-    #[cfg(unix)]
-    mapping_mode: MappingMode,
-    _state: PhantomData<State>,
+    #[cfg(feature = "huge-pages")]
+    huge_pages: Option<crate::HugePageSize>,
+    #[cfg_attr(feature = "serde-support", serde(skip))]
+    state: PhantomData<State>,
 }
-
-impl MmapOptions<NoPath> {
-    /// Creates a new builder.
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            path: None,
-            protection: Protection::READ,
-            offset: 0,
-            len: None,
-            advice: MemoryAdvice::Normal,
-            anonymous: false,
-            prefault: false,
-            huge_pages: None,
-            #[cfg(unix)]
-            mapping_mode: MappingMode::Shared,
-            _state: PhantomData,
-        }
-    }
-
-    /// Creates a new anonymous mapping builder.
-    #[must_use]
-    pub fn new_anonymous(size: usize) -> MmapOptions<HasPath> {
-        MmapOptions {
-            path: None,
-            protection: Protection::READ | Protection::WRITE,
-            offset: 0,
-            len: Some(size),
-            advice: MemoryAdvice::Normal,
-            anonymous: true,
-            prefault: false,
-            huge_pages: None,
-            #[cfg(unix)]
-            mapping_mode: MappingMode::Private,
-            _state: PhantomData,
-        }
-    }
-
-    /// Sets the file path to map.
-    #[must_use]
-    pub fn path(self, path: impl AsRef<Path>) -> MmapOptions<HasPath> {
-        MmapOptions {
-            path: Some(path.as_ref().to_path_buf()),
-            protection: self.protection,
-            offset: self.offset,
-            len: self.len,
-            advice: self.advice,
-            anonymous: false,
-            prefault: self.prefault,
-            huge_pages: self.huge_pages,
-            #[cfg(unix)]
-            mapping_mode: MappingMode::Shared,
-            _state: PhantomData,
-        }
-    }
-}
-
 impl Default for MmapOptions<NoPath> {
     fn default() -> Self {
         Self::new()
     }
 }
-
-impl MmapOptions<HasPath> {
-    /// Sets the protection flags.
-    #[must_use]
-    pub fn protection(mut self, protection: Protection) -> Self {
-        self.protection = protection;
-        self
+impl MmapOptions<NoPath> {
+    pub fn new() -> Self {
+        Self {
+            path: None,
+            offset: 0,
+            len: None,
+            advice: MemoryAdvice::Normal,
+            prefault: false,
+            #[cfg(feature = "huge-pages")]
+            huge_pages: None,
+            state: PhantomData,
+        }
     }
-
-    /// Sets the starting file offset for the mapping.
+    pub fn path(self, path: impl AsRef<Path>) -> MmapOptions<HasPath> {
+        MmapOptions {
+            path: Some(path.as_ref().to_owned()),
+            ..self.select()
+        }
+    }
+    fn select(self) -> MmapOptions<HasPath> {
+        MmapOptions {
+            path: self.path,
+            offset: self.offset,
+            len: self.len,
+            advice: self.advice,
+            prefault: self.prefault,
+            #[cfg(feature = "huge-pages")]
+            huge_pages: self.huge_pages,
+            state: PhantomData,
+        }
+    }
+    pub fn new_anonymous(size: usize) -> MmapOptions<HasPath> {
+        Self::new().select().len(size)
+    }
+}
+impl MmapOptions<HasPath> {
     #[must_use]
     pub fn offset(mut self, offset: u64) -> Self {
         self.offset = offset;
         self
     }
-
-    /// Sets the requested mapping length.
     #[must_use]
     pub fn len(mut self, len: usize) -> Self {
         self.len = Some(len);
         self
     }
-
-    /// Sets the OS memory advice hint.
     #[must_use]
     pub fn advice(mut self, advice: MemoryAdvice) -> Self {
         self.advice = advice;
         self
     }
-
-    /// Enables or disables prefaulting.
     #[must_use]
     pub fn prefault(mut self, enable: bool) -> Self {
         self.prefault = enable;
         self
     }
-
-    /// Convenience method for prefaulting all pages.
     #[must_use]
     pub fn populate(self) -> Self {
         self.prefault(true)
     }
-
-    /// Enables huge page mapping when supported.
+    /// Requires anonymous Linux huge pages of this size. An unavailable pool is an error.
+    #[cfg(feature = "huge-pages")]
     #[must_use]
-    pub fn huge_pages(mut self, size: HugePageSize) -> Self {
+    pub fn huge_pages(mut self, size: crate::HugePageSize) -> Self {
         self.huge_pages = Some(size);
         self
     }
 
-    /// Marks the mapping as shared on Unix.
-    #[cfg(unix)]
-    #[must_use]
-    pub fn shared(mut self) -> Self {
-        self.mapping_mode = MappingMode::Shared;
-        self
+    pub fn open(self) -> Result<ReadOnlyMmap> {
+        self.map_readonly().map(Mmap::into_read_only)
     }
 
-    /// Marks the mapping as private on Unix.
-    #[cfg(unix)]
-    #[must_use]
-    pub fn private(mut self) -> Self {
-        self.mapping_mode = MappingMode::Private;
-        self
+    pub fn map_readonly(self) -> Result<Mmap<ReadOnly>> {
+        #[cfg(any(unix, windows))]
+        {
+            let bytes = if let Some(path) = &self.path {
+                self.check_file_options()?;
+                let source = crate::ReadOnlyFile::new(std::fs::File::open(path)?)?;
+                let view = source.window(self.offset, self.len)?;
+                view.advise_range(0..view.len(), self.advice)?;
+                view.into_read_only()
+            } else {
+                self.allocate()?.make_read_only()?.into()
+            };
+            self.touch(&bytes);
+            Ok(Mmap(ReadOnly(bytes)))
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(MmapError::UnsupportedPlatform)
+        }
     }
 
-    /// Opens the file and creates a read-only compatibility mapping.
-    ///
-    /// This keeps the existing `ReadOnlyMmap`-based surface intact for the
-    /// rest of the workspace.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MmapError`] if the configured mapping cannot be created.
-    ///
-    /// # Safety
-    /// The file must not be modified or truncated while the mapping or any of its views live.
-    pub unsafe fn open(self) -> Result<ReadOnlyMmap> {
-        // SAFETY: open has the same file stability contract.
-        unsafe { self.map_readonly() }.map(ReadOnlyMmap::from_mmap)
+    /// Opens a writable snapshot. Call `flush` to persist changes.
+    pub fn map_readwrite(self) -> Result<Mmap<ReadWrite>> {
+        self.writable(true)
     }
-
-    /// Creates a read-only typed mapping.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MmapError`] if the configured mapping cannot be created.
-    ///
-    /// # Safety
-    /// The file must not be modified or truncated while the mapping or any of its views live.
-    pub unsafe fn map_readonly(mut self) -> Result<Mmap<ReadOnly>> {
-        self.protection = Protection::READ;
-        self.map_internal()
+    /// Creates a private writable copy. The original file only needs read access.
+    pub fn map_copy(self) -> Result<Mmap<CopyOnWrite>> {
+        self.writable(false).map(|m| Mmap(CopyOnWrite(m.0)))
     }
-
-    /// Creates a read-write typed mapping.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MmapError`] if the configured mapping cannot be created.
-    ///
-    /// # Safety
-    /// The mapped bytes must not be accessed through other handles while this mapping lives, and the file must not be truncated.
-    pub unsafe fn map_readwrite(mut self) -> Result<Mmap<crate::ReadWrite>> {
-        self.protection = Protection::READ | Protection::WRITE;
-        self.map_internal()
+    fn writable(self, write_back: bool) -> Result<Mmap<ReadWrite>> {
+        #[cfg(any(unix, windows))]
+        {
+            if self.advice != MemoryAdvice::Normal {
+                return Err(MmapError::UnsupportedPlatform);
+            }
+            let map = if let Some(path) = &self.path {
+                self.check_file_options()?;
+                let file = std::fs::File::options()
+                    .read(true)
+                    .write(write_back)
+                    .open(path)?;
+                Mmap::snapshot(file, self.offset, self.len, write_back)?
+            } else {
+                Mmap::from_anonymous(self.allocate()?)
+            };
+            self.touch(&map);
+            Ok(map)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = write_back;
+            Err(MmapError::UnsupportedPlatform)
+        }
     }
-
-    /// Creates a typed mapping with the configured options.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MmapError`] if the configured mapping cannot be created.
-    ///
-    /// # Safety
-    /// The protection must permit all accesses exposed by Mode. For file mappings, prevent truncation and conflicting access for the mapping's lifetime.
-    pub unsafe fn map<Mode>(self) -> Result<Mmap<Mode>> {
-        self.map_internal()
+    #[cfg(any(unix, windows))]
+    fn check_file_options(&self) -> Result<()> {
+        #[cfg(feature = "huge-pages")]
+        if self.huge_pages.is_some() {
+            return Err(MmapError::UnsupportedPlatform);
+        }
+        Ok(())
     }
-
-    fn map_internal<Mode>(self) -> Result<Mmap<Mode>> {
-        use crate::platform::PlatformMmap;
-        use std::fs::OpenOptions;
-
-        if self.len.is_some_and(|len| len > isize::MAX as usize) {
+    #[cfg(any(unix, windows))]
+    fn touch(&self, bytes: &[u8]) {
+        if self.prefault {
+            for chunk in bytes.chunks(4096) {
+                std::hint::black_box(chunk[0]);
+            }
+        }
+    }
+    #[cfg(any(unix, windows))]
+    fn allocate(&self) -> Result<memmap2::MmapMut> {
+        if self.offset != 0 || self.advice != MemoryAdvice::Normal {
+            return Err(MmapError::InvalidConfiguration(
+                "anonymous mappings require offset zero and normal advice".into(),
+            ));
+        }
+        let len = self.len.unwrap_or(0);
+        if len == 0 {
+            return Err(MmapError::EmptyMapping);
+        }
+        if len > isize::MAX as usize {
             return Err(MmapError::InvalidConfiguration(
                 "mapping exceeds the maximum slice length".into(),
             ));
         }
-        if self.prefault && !self.protection.can_read() {
-            return Err(MmapError::InvalidConfiguration(
-                "prefault requires read access".into(),
-            ));
-        }
-
-        let platform_mmap = if self.anonymous {
-            let len = self.len.ok_or_else(|| {
-                MmapError::InvalidConfiguration(
-                    "anonymous mapping requires an explicit size".to_string(),
-                )
-            })?;
-
-            if len == 0 {
-                return Err(MmapError::EmptyMapping);
-            }
-
-            if let Some(huge_page_size) = self.huge_pages {
-                PlatformMmap::new_anonymous_huge(len, self.protection, huge_page_size)?
-            } else {
-                PlatformMmap::new_anonymous(len, self.protection)?
-            }
-        } else {
-            let Some(path) = self.path else {
-                return Err(MmapError::InvalidConfiguration(
-                    "path must be set for file-backed mappings".to_string(),
-                ));
-            };
-
-            let file = if self.protection.can_write() {
-                OpenOptions::new().read(true).write(true).open(&path)?
-            } else {
-                OpenOptions::new().read(true).open(&path)?
-            };
-
-            let file_len = file.metadata()?.len();
-            let len = match self.len {
-                Some(0) => return Err(MmapError::EmptyMapping),
-                Some(len) => len,
-                None => {
-                    let remaining =
-                        file_len
-                            .checked_sub(self.offset)
-                            .ok_or(MmapError::InvalidRange {
-                                offset: self.offset,
-                                len: 0,
-                                file_len,
-                            })?;
-                    usize::try_from(remaining).map_err(|_| MmapError::InvalidRange {
-                        offset: self.offset,
-                        len: usize::MAX,
-                        file_len,
-                    })?
+        let mut opts = memmap2::MmapOptions::new();
+        opts.len(len);
+        #[cfg(feature = "huge-pages")]
+        if let Some(size) = self.huge_pages {
+            #[cfg(target_os = "linux")]
+            {
+                if !len.is_multiple_of(size.size_bytes()) {
+                    return Err(MmapError::InvalidConfiguration(
+                        "length must be a multiple of the requested huge page size".into(),
+                    ));
                 }
-            };
-
-            if len == 0 {
-                return Err(MmapError::EmptyMapping);
+                opts.huge(Some(size.size_bytes().trailing_zeros() as u8));
             }
-
-            if len > isize::MAX as usize {
-                return Err(MmapError::InvalidRange {
-                    offset: self.offset,
-                    len,
-                    file_len,
-                });
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = size;
+                return Err(MmapError::UnsupportedPlatform);
             }
-            #[cfg(unix)]
-            let platform = if let Some(huge_page_size) = self.huge_pages {
-                PlatformMmap::new_huge(&file, self.offset, len, self.protection, huge_page_size)?
-            } else {
-                PlatformMmap::new(&file, self.offset, len, self.protection, self.mapping_mode)?
-            };
-
-            #[cfg(windows)]
-            let platform = if let Some(huge_page_size) = self.huge_pages {
-                PlatformMmap::new_huge(file, self.offset, len, self.protection, huge_page_size)?
-            } else {
-                PlatformMmap::new(file, self.offset, len, self.protection)?
-            };
-
-            #[cfg(not(any(unix, windows)))]
-            let platform = {
-                let _ = (file, len);
-                PlatformMmap::new_file_backed_unsupported()?
-            };
-
-            platform
-        };
-
-        if self.advice != MemoryAdvice::Normal {
-            platform_mmap.advise(self.advice)?;
         }
-
-        if self.prefault {
-            platform_mmap.prefault()?;
-        }
-
-        Ok(Mmap::from_platform(platform_mmap))
+        Ok(opts.map_anon()?)
     }
 }

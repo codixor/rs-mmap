@@ -13,13 +13,7 @@ targets=(
   "x86_64-linux-android"
 )
 
-installed_targets="$(rustup target list --installed)"
-
+rustup target add "${targets[@]}"
 for target in "${targets[@]}"; do
-  if grep -qx "$target" <<<"$installed_targets"; then
-    echo "==> cargo check --target $target"
-    cargo check --target "$target"
-  else
-    echo "==> skipping $target (target not installed)"
-  fi
+  cargo check --locked --lib --all-features --target "$target"
 done

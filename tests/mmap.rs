@@ -36,7 +36,7 @@ fn open_reads_bytes_from_a_temp_file() {
     let path = env::temp_dir().join(format!("mmap-open-{}-{unique}.bin", process::id()));
 
     fs::write(&path, b"mapped-data").expect("temp file should be writable");
-    let mapped = unsafe { ReadOnlyMmap::open(&path) }.expect("open should map the file");
+    let mapped = ReadOnlyMmap::open(&path).expect("open should map the file");
 
     assert_eq!(mapped.as_slice(), b"mapped-data");
     assert_eq!(mapped.len(), 11);
@@ -56,8 +56,12 @@ fn options_can_map_a_file_subrange() {
     let path = env::temp_dir().join(format!("mmap-open-range-{}-{unique}.bin", process::id()));
 
     fs::write(&path, b"0123456789abcdef").expect("temp file should be writable");
-    // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-    let mapped = unsafe { MmapOptions::new().path(&path).offset(4).len(6).open() }
+
+    let mapped = MmapOptions::new()
+        .path(&path)
+        .offset(4)
+        .len(6)
+        .open()
         .expect("range open should map the file segment");
 
     assert_eq!(mapped.as_slice(), b"456789");
@@ -78,8 +82,12 @@ fn options_reject_invalid_range() {
     let path = env::temp_dir().join(format!("mmap-invalid-range-{}-{unique}.bin", process::id()));
 
     fs::write(&path, b"tiny").expect("temp file should be writable");
-    // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-    let error = unsafe { MmapOptions::new().path(&path).offset(2).len(8).open() }
+
+    let error = MmapOptions::new()
+        .path(&path)
+        .offset(2)
+        .len(8)
+        .open()
         .expect_err("range should be rejected");
 
     assert!(matches!(error, MmapError::InvalidRange { .. }));
@@ -99,15 +107,13 @@ fn typed_map_readonly_reads_a_file_subrange() {
     let path = env::temp_dir().join(format!("mmap-typed-ro-{}-{unique}.bin", process::id()));
 
     fs::write(&path, b"abcdefghijklmnop").expect("temp file should be writable");
-    // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-    let mapped = unsafe {
-        MmapOptions::new()
-            .path(&path)
-            .offset(3)
-            .len(5)
-            .map_readonly()
-    }
-    .expect("typed read-only mapping should succeed");
+
+    let mapped = MmapOptions::new()
+        .path(&path)
+        .offset(3)
+        .len(5)
+        .map_readonly()
+        .expect("typed read-only mapping should succeed");
 
     assert_eq!(mapped.as_slice(), b"defgh");
     assert_eq!(
@@ -134,10 +140,12 @@ fn typed_map_readwrite_persists_changes() {
 
     fs::write(&path, b"000000").expect("temp file should be writable");
     {
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mut mapped = unsafe { MmapOptions::new().path(&path).map_readwrite() }
+        let mut mapped = MmapOptions::new()
+            .path(&path)
+            .map_readwrite()
             .expect("typed read-write mapping should succeed");
         mapped.as_mut_slice()[1..4].copy_from_slice(b"123");
+        mapped.flush().unwrap();
     }
 
     assert_eq!(

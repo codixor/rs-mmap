@@ -1,5 +1,7 @@
 # Reading a 1 GB log
 
+The results and reproduction commands on this page refer to the [0.2.x native backend and harness](https://github.com/codixor/rs-mmap/tree/v0.2.3). Version 0.3 snapshots ordinary file windows. Its timings have not been measured here.
+
 ## Results
 
 On this PC, both crates took about the same time to count all ten million log lines. Scanning with rs-mmap in 4 MiB windows reached a similar elapsed time with a substantially smaller peak process working set.

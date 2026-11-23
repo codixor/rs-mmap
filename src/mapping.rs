@@ -1,163 +1,181 @@
-//! Core memory-mapped region types.
-
-use crate::platform::PlatformMmap;
-use std::marker::PhantomData;
+use crate::{MmapError, ReadOnlyMmap, Result};
 use std::ops::{Deref, DerefMut};
+#[cfg(any(unix, windows))]
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom, Write},
+    sync::Mutex,
+};
 
-/// Phantom type for read-only access
-pub struct ReadOnly;
-
-/// Phantom type for read-write access
-pub struct ReadWrite;
-
-/// Phantom type for copy-on-write access
-pub struct CopyOnWrite;
-
-/// A memory-mapped region with type-safe access control.
-///
-/// The `Mode` type parameter enforces access permissions at compile time:
-/// - `Mmap<ReadOnly>`: Immutable access only
-/// - `Mmap<ReadWrite>`: Mutable access allowed
-/// - `Mmap<CopyOnWrite>`: Copy-on-write semantics
-///
-/// # Examples
-///
-/// ```ignore
-/// use mmap_rs::{MmapOptions, Mmap, ReadOnly};
-///
-/// let mmap: Mmap<ReadOnly> = MmapOptions::new()
-///     .path("data.bin")
-///     .map_readonly()?;
-///
-/// let data: &[u8] = &mmap;
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-pub struct Mmap<Mode = ReadOnly> {
-    inner: PlatformMmap,
-    _mode: PhantomData<Mode>,
+/// Immutable storage shared with read-only views.
+pub struct ReadOnly(pub(crate) ReadOnlyMmap);
+/// Writable snapshot, anonymous memory, or an imported native map.
+pub struct ReadWrite {
+    #[cfg(any(unix, windows))]
+    bytes: memmap2::MmapMut,
+    #[cfg(any(unix, windows))]
+    destination: Destination,
+    #[cfg(not(any(unix, windows)))]
+    bytes: Vec<u8>,
 }
+#[cfg(any(unix, windows))]
+enum Destination {
+    Private,
+    Native,
+    File { handle: Mutex<File>, offset: u64 },
+}
+/// Private writable snapshot. Its changes are never written back.
+pub struct CopyOnWrite(pub(crate) ReadWrite);
+/// A region whose mode determines which operations are available.
+pub struct Mmap<Mode = ReadOnly>(pub(crate) Mode);
 
-impl<Mode> Mmap<Mode> {
-    /// Create a new Mmap from a platform mapping
-    pub(crate) fn from_platform(inner: PlatformMmap) -> Self {
-        Self {
-            inner,
-            _mode: PhantomData,
-        }
+impl AsRef<[u8]> for ReadOnly {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
     }
-
-    /// Get the length of the mapped region
+}
+impl AsRef<[u8]> for ReadWrite {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+impl AsRef<[u8]> for CopyOnWrite {
+    fn as_ref(&self) -> &[u8] {
+        self.0.as_ref()
+    }
+}
+impl<Mode: AsRef<[u8]>> Mmap<Mode> {
     pub fn len(&self) -> usize {
-        self.inner.len()
+        self.0.as_ref().len()
     }
-
-    /// Check if the mapping is empty
     pub fn is_empty(&self) -> bool {
-        self.inner.is_empty()
+        self.0.as_ref().is_empty()
     }
-
-    /// Get a pointer to the mapped memory
     pub fn as_ptr(&self) -> *const u8 {
-        self.inner.as_ptr()
+        self.0.as_ref().as_ptr()
     }
-}
-
-impl Mmap<ReadOnly> {
-    /// Get a slice view of the mapped region
     pub fn as_slice(&self) -> &[u8] {
-        // SAFETY: The PlatformMmap guarantees ptr and len are valid
-        // for the lifetime of this Mmap
-        unsafe { std::slice::from_raw_parts(self.inner.as_ptr(), self.inner.len()) }
+        self.0.as_ref()
     }
 }
-
-impl Deref for Mmap<ReadOnly> {
+impl<Mode: AsRef<[u8]>> Deref for Mmap<Mode> {
     type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
+    fn deref(&self) -> &[u8] {
         self.as_slice()
     }
 }
-
+impl Mmap<ReadOnly> {
+    pub fn into_read_only(self) -> ReadOnlyMmap {
+        self.0.0
+    }
+}
 impl Mmap<ReadWrite> {
-    /// Allocates a private, zero-filled anonymous mapping.
-    pub fn anonymous(len: usize) -> crate::Result<Self> {
-        // SAFETY: an anonymous mapping has no external file or aliases.
-        unsafe { crate::MmapOptions::new_anonymous(len).map_readwrite() }
+    /// Allocates a zeroed, private anonymous mapping.
+    pub fn anonymous(len: usize) -> Result<Self> {
+        crate::MmapOptions::new_anonymous(len).map_readwrite()
     }
-
-    /// Get a mutable slice view of the mapped region
+    #[cfg(any(unix, windows))]
+    pub(crate) fn from_anonymous(bytes: memmap2::MmapMut) -> Self {
+        Self(ReadWrite {
+            bytes,
+            destination: Destination::Private,
+        })
+    }
+    #[cfg(any(unix, windows))]
+    pub(crate) fn snapshot(
+        mut file: File,
+        offset: u64,
+        length: Option<usize>,
+        write_back: bool,
+    ) -> Result<Self> {
+        let len = crate::read_only_file::range_len(file.metadata()?.len(), offset, length)?;
+        let mut bytes = memmap2::MmapMut::map_anon(len)?;
+        file.seek(SeekFrom::Start(offset))?;
+        file.read_exact(&mut bytes)?;
+        Ok(Self(ReadWrite {
+            bytes,
+            destination: if write_back {
+                Destination::File {
+                    handle: Mutex::new(file),
+                    offset,
+                }
+            } else {
+                Destination::Private
+            },
+        }))
+    }
     pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        // SAFETY: The PlatformMmap guarantees ptr and len are valid
-        // for the lifetime of this Mmap, and ReadWrite mode ensures
-        // we have exclusive mutable access
-        unsafe { std::slice::from_raw_parts_mut(self.inner.as_mut_ptr(), self.inner.len()) }
+        &mut self.0.bytes
     }
 
-    /// Resize the mapping to a new size.
-    ///
-    /// On Linux, this uses `mremap()` which can efficiently grow or shrink
-    /// the mapping. Other platforms return an unsupported-resize error.
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let mut mmap = MmapOptions::new()
-    ///     .path("growable.dat")
-    ///     .map_readwrite()?;
-    ///
-    /// // Grow from 1MB to 2MB
-    /// mmap.resize(2 * 1024 * 1024)?;
-    /// # Ok::<(), mmap_rs::MmapError>(())
-    /// ```
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if:
-    /// - The new size is zero
-    /// - The system cannot allocate the requested size
-    /// - The file backing is too small (for file-backed mappings)
-    ///
-    /// # Safety
-    /// For file-backed mappings, the file must cover the entire new extent,
-    /// and the mapping's original access guarantees must hold for that extent.
-    pub unsafe fn resize(&mut self, new_size: usize) -> crate::Result<()> {
-        if new_size > isize::MAX as usize {
-            return Err(crate::MmapError::InvalidConfiguration(
-                "mapping exceeds the maximum slice length".into(),
-            ));
+    /// Persists the complete region. Dropping a writable file snapshot discards
+    /// unflushed edits. Coordinate concurrent writers at the application level.
+    pub fn flush(&self) -> Result<()> {
+        self.flush_range(0, self.len())
+    }
+
+    /// Persists a byte range relative to this region. File snapshots write only
+    /// those bytes and sync the file. Imported native maps use memmap2's flush.
+    pub fn flush_range(&self, offset: usize, len: usize) -> Result<()> {
+        let end = offset.checked_add(len).filter(|&n| n <= self.len()).ok_or(
+            MmapError::SliceOutOfBounds {
+                start: offset,
+                end: offset.saturating_add(len),
+                len: self.len(),
+            },
+        )?;
+        if len == 0 {
+            return Ok(());
         }
-        self.inner.resize(new_size)
+        #[cfg(any(unix, windows))]
+        {
+            match &self.0.destination {
+                Destination::File {
+                    handle: file,
+                    offset: base,
+                } => {
+                    let mut file = file
+                        .lock()
+                        .map_err(|_| std::io::Error::other("file lock poisoned"))?;
+                    let start = *base + offset as u64;
+                    crate::read_only_file::range_len(file.metadata()?.len(), start, Some(len))?;
+                    file.seek(SeekFrom::Start(start))?;
+                    file.write_all(&self[offset..end])?;
+                    file.sync_all()?;
+                }
+                Destination::Native => self.0.bytes.flush_range(offset, len)?,
+                Destination::Private => (),
+            }
+            Ok(())
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = end;
+            Err(MmapError::UnsupportedPlatform)
+        }
     }
 }
-
-impl Deref for Mmap<ReadWrite> {
-    type Target = [u8];
-
-    fn deref(&self) -> &Self::Target {
-        // SAFETY: The PlatformMmap guarantees ptr and len are valid
-        unsafe { std::slice::from_raw_parts(self.inner.as_ptr(), self.inner.len()) }
-    }
-}
-
 impl DerefMut for Mmap<ReadWrite> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    fn deref_mut(&mut self) -> &mut [u8] {
         self.as_mut_slice()
     }
 }
+impl DerefMut for Mmap<CopyOnWrite> {
+    fn deref_mut(&mut self) -> &mut [u8] {
+        &mut self.0.0.bytes
+    }
+}
+#[cfg(any(unix, windows))]
+impl From<memmap2::MmapMut> for Mmap<ReadWrite> {
+    fn from(bytes: memmap2::MmapMut) -> Self {
+        Self(ReadWrite {
+            bytes,
+            destination: Destination::Native,
+        })
+    }
+}
 
-// Note: Mmap does not implement Copy (contains PlatformMmap which is not Copy)
-
-// SAFETY: Mmap<ReadOnly> can be safely shared across threads since it only
-// provides immutable access to the underlying memory
-unsafe impl Send for Mmap<ReadOnly> {}
-unsafe impl Sync for Mmap<ReadOnly> {}
-
-// SAFETY: Mmap<ReadWrite> can be sent but not shared since it provides
-// mutable access and requires exclusive access per Rust's borrowing rules
-unsafe impl Send for Mmap<ReadWrite> {}
-
-#[cfg(test)]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use crate::MmapOptions;
     use std::io::Write;
@@ -174,8 +192,8 @@ mod tests {
     #[test]
     fn test_mmap_len() {
         let file = create_test_file(4096, 0x42);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
 
         assert_eq!(mmap.len(), 4096);
         assert!(!mmap.is_empty());
@@ -184,8 +202,8 @@ mod tests {
     #[test]
     fn test_readonly_as_slice() {
         let file = create_test_file(1024, 0x55);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
 
         let slice = mmap.as_slice();
         assert_eq!(slice.len(), 1024);
@@ -197,8 +215,8 @@ mod tests {
     #[test]
     fn test_readonly_deref() {
         let file = create_test_file(2048, 0xAA);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
 
         // Test Deref implementation
         assert_eq!(mmap[0], 0xAA);
@@ -209,8 +227,11 @@ mod tests {
     #[test]
     fn test_readwrite_as_mut_slice() {
         let file = create_test_file(4096, 0x00);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mut mmap = unsafe { MmapOptions::new().path(file.path()).map_readwrite() }.unwrap();
+
+        let mut mmap = MmapOptions::new()
+            .path(file.path())
+            .map_readwrite()
+            .unwrap();
 
         let slice = mmap.as_mut_slice();
         slice[0] = 0xFF;
@@ -225,8 +246,11 @@ mod tests {
     #[test]
     fn test_readwrite_deref_mut() {
         let file = create_test_file(1024, 0x00);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mut mmap = unsafe { MmapOptions::new().path(file.path()).map_readwrite() }.unwrap();
+
+        let mut mmap = MmapOptions::new()
+            .path(file.path())
+            .map_readwrite()
+            .unwrap();
 
         // Test DerefMut implementation
         mmap[0] = 0x11;
@@ -239,8 +263,11 @@ mod tests {
     #[test]
     fn test_readwrite_immutable_access() {
         let file = create_test_file(2048, 0xBB);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readwrite() }.unwrap();
+
+        let mmap = MmapOptions::new()
+            .path(file.path())
+            .map_readwrite()
+            .unwrap();
 
         // ReadWrite should also allow immutable access via Deref
         assert_eq!(mmap[0], 0xBB);
@@ -250,23 +277,21 @@ mod tests {
     #[test]
     fn test_as_ptr() {
         let file = create_test_file(512, 0x33);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
 
         let ptr = mmap.as_ptr();
         assert!(!ptr.is_null());
 
-        // SAFETY: We know the pointer is valid for the mmap lifetime
-        unsafe {
-            assert_eq!(*ptr, 0x33);
-        }
+        assert_eq!(ptr, mmap.as_slice().as_ptr());
+        assert_eq!(mmap[0], 0x33);
     }
 
     #[test]
     fn test_multiple_reads() {
         let file = create_test_file(8192, 0x77);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
 
         // Multiple immutable borrows should work
         let slice1 = mmap.as_slice();
@@ -279,8 +304,8 @@ mod tests {
     #[test]
     fn test_zero_sized_mapping() {
         let file = create_test_file(0, 0x00);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let result = unsafe { MmapOptions::new().path(file.path()).map_readonly() };
+
+        let result = MmapOptions::new().path(file.path()).map_readonly();
 
         // Zero-sized mappings should error (platform limitation)
         assert!(result.is_err());
@@ -290,8 +315,8 @@ mod tests {
     fn test_large_mapping() {
         let size = 1024 * 1024; // 1MB
         let file = create_test_file(size, 0x99);
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(file.path()).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(file.path()).map_readonly().unwrap();
 
         assert_eq!(mmap.len(), size);
         assert_eq!(mmap[0], 0x99);
@@ -305,17 +330,17 @@ mod tests {
         let path = file.path().to_path_buf();
 
         {
-            // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-            let mut mmap = unsafe { MmapOptions::new().path(&path).map_readwrite() }.unwrap();
+            let mut mmap = MmapOptions::new().path(&path).map_readwrite().unwrap();
 
             mmap[0] = 0xAA;
             mmap[100] = 0xBB;
             mmap[4095] = 0xCC;
+            mmap.flush().unwrap();
         }
 
         // Read back to verify persistence
-        // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-        let mmap = unsafe { MmapOptions::new().path(&path).map_readonly() }.unwrap();
+
+        let mmap = MmapOptions::new().path(&path).map_readonly().unwrap();
 
         assert_eq!(mmap[0], 0xAA);
         assert_eq!(mmap[100], 0xBB);

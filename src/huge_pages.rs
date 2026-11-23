@@ -5,41 +5,18 @@
 
 /// Huge page size options.
 ///
-/// # Platform Support
-///
-/// - **Linux**: Full support via `MAP_HUGETLB`
-/// - **Windows**: Full support via `MEM_LARGE_PAGES`
-/// - **macOS**: Limited support via superpage hints
-///
-/// # Examples
-///
-/// ```ignore
-/// use mmap_rs::{MmapOptions, HugePageSize};
-///
-/// let mmap = MmapOptions::new()
-///     .path("large_dataset.bin")
-///     .huge_pages(HugePageSize::Size2MB)
-///     .map_readonly()?;
-/// # Ok::<(), mmap_rs::MmapError>(())
-/// ```
+/// Explicit anonymous huge pages are supported on configured Linux hosts.
 #[cfg_attr(
     feature = "serde-support",
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HugePageSize {
-    /// 2 MB pages (most common)
-    ///
-    /// - Linux: Requires 2MB huge pages configured
-    /// - Windows: Requires "Lock pages in memory" privilege
-    /// - macOS: Best-effort superpage allocation
+    /// 2 MiB pages.
     Size2MB,
 
-    /// 1 GB pages (for very large datasets)
-    ///
-    /// - Linux: Requires 1GB huge pages configured
-    /// - Windows: Not supported
-    /// - macOS: Not supported
+    /// 1 GiB pages.
     Size1GB,
 }
 
@@ -49,15 +26,6 @@ impl HugePageSize {
         match self {
             Self::Size2MB => 2 * 1024 * 1024,
             Self::Size1GB => 1024 * 1024 * 1024,
-        }
-    }
-
-    /// Convert to Linux MAP_HUGE_* flags
-    #[cfg(target_os = "linux")]
-    pub(crate) fn to_linux_flags(self) -> libc::c_int {
-        match self {
-            Self::Size2MB => libc::MAP_HUGE_2MB,
-            Self::Size1GB => libc::MAP_HUGE_1GB,
         }
     }
 }

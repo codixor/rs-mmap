@@ -6,7 +6,7 @@ repository = "https://github.com/codixor/rs-mmap"
 edition = "2024"
 rust-version = "1.99"
 license = "MIT OR Apache-2.0"
-version = "0.2.3"
+version = "0.3.0"
 include = ["/src/**", "/tests/**", "/examples/**", "/benches/**", "/Cargo.toml", "/Cargo.lock", "/rust-toolchain.toml", "/README.md", "/LICENSE-*"]
 keywords = ["mmap", "memmap", "bytes", "io"]
 categories = ["filesystem", "memory-management"]
@@ -21,43 +21,26 @@ bytemuck = { version = "1.25.0", default-features = false, optional = true }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "std"], optional = true }
 
 [target.'cfg(any(unix, windows))'.dependencies]
-memmap2 = "=0.9.12"
-
-[target.'cfg(unix)'.dependencies]
-libc = { version = "0.2.185", default-features = false }
-
-[target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = [
-  "Win32_Foundation",
-  "Win32_Security",
-  "Win32_Storage_FileSystem",
-  "Win32_System_IO",
-  "Win32_System_Memory",
-  "Win32_System_SystemInformation",
-] }
+memmap2 = "0.9.12"
 
 [dev-dependencies]
 tempfile = "3.27.0"
 serde_json = { version = "1.0.149", default-features = false, features = ["std"] }
 
-[target.'cfg(windows)'.dev-dependencies]
-windows = { version = "0.62.2", features = ["Win32_System_ProcessStatus", "Win32_System_Threading"] }
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1", optional = true, features = ["thread"] }
 
-[target.'cfg(not(target_arch = "wasm32"))'.dependencies.tokio]
-version = "1.52.1"
-default-features = false
-features = ["rt", "fs", "io-util", "macros"]
-optional = true
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+rustix = { version = "1.1", features = ["fs"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
-memchr = "2.8"
 
 [features]
 default = []
 huge-pages = []
-numa = []
-async = ["dep:tokio"]
+numa = ["dep:rustix"]
+unstable = ["numa", "huge-pages"]
 zerocopy-views = ["dep:zerocopy", "dep:bytemuck"]
 serde-support = ["dep:serde"]
 
@@ -66,15 +49,7 @@ name = "mmap_core"
 harness = false
 
 [lints.rust]
-unsafe_op_in_unsafe_fn = "deny"
-
-[[bench]]
-name = "compare"
-harness = false
-
-[[bench]]
-name = "log_1gb"
-harness = false
+unsafe_code = "forbid"
 
 [lints.clippy]
 all = "warn"

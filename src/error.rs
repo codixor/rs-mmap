@@ -1,15 +1,16 @@
-use std::{io, path::PathBuf};
+use std::io;
 
 use thiserror::Error;
 
 /// Errors exposed by the `rs-mmap` crate.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum MmapError {
     /// Underlying I/O failure while opening or inspecting a file.
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
     /// File-backed mapping is unavailable on the current target.
-    #[error("read-only file mapping is not available on this platform")]
+    #[error("operation is unavailable on this platform or backing")]
     UnsupportedPlatform,
     /// The requested mapping would be empty.
     #[error("mapping length must be greater than zero")]
@@ -36,14 +37,6 @@ pub enum MmapError {
         /// Requested slice end.
         end: usize,
     },
-    /// Invalid alignment.
-    #[error("invalid alignment: size {size} not aligned to {alignment}")]
-    InvalidAlignment {
-        /// The size that failed alignment.
-        size: usize,
-        /// The required alignment.
-        alignment: usize,
-    },
     /// Typed view length does not match the requested element layout.
     #[error("typed view length {len} is invalid for element size {element_size}")]
     InvalidViewSize {
@@ -60,37 +53,17 @@ pub enum MmapError {
         /// Required alignment for the target element type.
         alignment: usize,
     },
-    /// Permission denied for an operation.
-    #[error("permission denied for {operation}")]
-    PermissionDenied {
-        /// Description of the operation that was denied.
-        operation: String,
-    },
-    /// Huge pages are not supported on this platform or host.
-    #[error("huge pages not supported on this platform")]
-    HugePagesUnsupported,
-    /// Address space or system allocation failure.
-    #[error("address space exhausted")]
-    OutOfMemory,
-    /// The file backing a mapping was truncated.
-    #[error("file truncated while mapped: {0}")]
-    FileTruncated(PathBuf),
     /// Invalid mapping configuration.
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),
-    /// Platform-specific system error.
-    #[error("system error: {0}")]
-    SystemError(String),
-    /// Mapping failed.
-    #[error("mapping failed: {0}")]
-    MappingFailed(String),
 }
 
 impl From<MmapError> for io::Error {
     fn from(err: MmapError) -> Self {
         match err {
             MmapError::Io(error) => error,
-            other => io::Error::other(other),
+            MmapError::UnsupportedPlatform => io::Error::new(io::ErrorKind::Unsupported, err),
+            other => io::Error::new(io::ErrorKind::InvalidInput, other),
         }
     }
 }

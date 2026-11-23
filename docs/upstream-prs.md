@@ -1,5 +1,7 @@
 # memmap2 pull requests reviewed on 2026-11-23
 
+This review documents the native backend in the [v0.2.3 release](https://github.com/codixor/rs-mmap/tree/v0.2.3). See the [migration notes](../README.md) for the current API.
+
 We reviewed all eight open pull requests for their fit with independently mapped windows of immutable files, including rotated 1 GB logs. The adaptations use the existing `memmap2 0.9.12` dependency.
 
 | Upstream proposal | Decision for rs-mmap |

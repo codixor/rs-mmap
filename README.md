@@ -1,49 +1,89 @@
 # rs-mmap
 
-A Rust crate for typed memory mappings, checked subranges, and independently owned read-only file views.
+Checked byte windows, writable snapshots, and fixed-layout records for Rust. This checkout develops 0.3.0 and requires Rust 1.99. The latest published 0.2.x release is [0.2.3](https://crates.io/crates/rs-mmap/0.2.3).
 
-```sh
-cargo add rs-mmap@0.2.3
-```
+## Reading a file
 
-## Repeated file windows
-
-`ReadOnlyFile` accepts an open file and checks each requested range against its length. Windows creates one file-mapping object and reuses it across views. Unix maps each range with `memmap2`. Each view unmaps independently and can outlive its source.
+`ReadOnlyFile::view` reads a range from an open file. If memmap2 can verify that the OS prevents changes and truncation, the view maps the original pages directly. For an ordinary file, it copies only the requested range into private memory. Use `FileView::is_file_mapped()` to check which happened. Both kinds of view can outlive the file handle.
 
 ```rust
+# #[cfg(any(unix, windows))] {
 use rs_mmap::ReadOnlyFile;
-use std::fs::File;
+use std::io::Write;
 
-/// Reads the first four bytes of a stable file.
-///
-/// # Safety
-/// Prevent writes and truncation for the duration of this call.
-unsafe fn header(file: File) -> rs_mmap::Result<[u8; 4]> {
-    // SAFETY: the caller keeps the file stable. Both handles are local.
-    let source = unsafe { ReadOnlyFile::new(file)? };
-    let view = source.view(0, 4)?;
-    Ok([view[0], view[1], view[2], view[3]])
-}
+let mut file = tempfile::tempfile()?;
+file.write_all(b"first\nlast\n")?;
+let source = ReadOnlyFile::new(file)?;
+let first = source.view(0, 5)?;
+assert_eq!(&*first, b"first");
+assert!(source.with_suffix(5, |tail| tail == b"last\n")?);
+# }
+# Ok::<(), rs_mmap::MmapError>(())
 ```
 
-Prevent modifications and truncation until the source and its last view have been dropped. If a complete file is already mapped and a borrowed range is sufficient, index its byte slice directly. Convert an existing `memmap2::Mmap` with `ReadOnlyMmap::from(map)` to share or slice the original bytes without remapping.
+The source records the length at open. Shrinking the file during a snapshot can produce an I/O error. Concurrent writes can produce a mixture of old and new bytes during the read. After the read, the returned bytes are stable. For large logs, use windows or `with_suffix` to bound the amount copied. Opening the complete ordinary file with `ReadOnlyMmap::open` snapshots its entire contents.
 
-On Windows, callers that already own a readable file-mapping object can pass it to `unsafe { ReadOnlyFile::from_section(section, file, len)? }`. Supply the backing file and the usable byte length starting at offset zero. Views reuse the supplied object and keep the file alive.
+## Writing and persistence
 
-On Unix, `FileView::advise_range` accepts byte offsets relative to the view. For example, `view.advise_range(0..view.len(), MemoryAdvice::Sequential)?` hints at a forward scan. On Linux 5.4 or later, a reader can pass `MemoryAdvice::Cold` after scanning a log window to make its pages candidates for earlier reclamation. Use `PageOut` to request reclamation explicitly. The kernel acts on whole pages, may ignore hints, and can return an error for unsupported advice. [Upstream PR review](https://github.com/codixor/rs-mmap/blob/v0.2.3/docs/upstream-prs.md)
+`MmapOptions::map_readwrite` takes a private snapshot and holds the original file handle for write-back. `flush_range(offset, len)` writes just that range and syncs the file. `flush()` writes the whole snapshot. Unflushed edits are discarded on drop. Concurrent writers require coordination, and multi-byte writes are not transactional. Use `map_copy()` for edits that should stay private.
 
-`ReadOnlyFile::with_suffix(max_len, inspect)` passes the last bytes of an immutable file to a callback. Short files yield their entire contents. Linux uses a positional read for suffixes up to 64 KiB. Larger Linux suffixes and Windows suffixes use read-only mappings.
+```rust
+# #[cfg(any(unix, windows))] {
+use rs_mmap::MmapOptions;
+use std::io::Write;
 
-## Other APIs
+let mut file = tempfile::NamedTempFile::new()?;
+file.write_all(b"abcdef")?;
+let mut bytes = MmapOptions::new().path(file.path()).offset(1).len(3).map_readwrite()?;
+bytes[1] = b'X';
+bytes.flush_range(1, 1)?;
+assert_eq!(std::fs::read(file.path())?, b"abXdef");
+# }
+# Ok::<(), rs_mmap::MmapError>(())
+```
 
-- `MmapOptions` creates typed read-only and read-write mappings for paths and subranges. File-backed constructors are unsafe because external file access is outside Rust's borrowing rules.
-- `Mmap::<ReadWrite>::anonymous(len)` creates a safe private, zero-filled mapping. `ReadOnlyMmap::from_vec` and `from_bytes` provide shareable in-memory bytes, including on WebAssembly.
-- `zerocopy-views` enables checked typed views, `async` enables the Tokio adapter, and `serde-support` enables serialization of configuration. The original platform-specific huge-page, file-lock and NUMA APIs are included.
+## Fixed-layout records
 
-## Development
+The `zerocopy-views` feature adds `MmapStruct<T>` and checked typed references and slices. A record occupies exactly the native byte layout of one `T: ZeroCopyView`. Choose a stable layout and define byte order when sharing files between machines. `create` refuses to overwrite an existing path. `ByteArrayExt` reads and writes bounded, zero-padded UTF-8 fields.
 
-The development toolchain is pinned to Rust 1.100.0. The minimum supported Rust version is 1.99. Local x86-64 GNU/Linux builds use Clang and LLD. Release benchmarks use fat LTO and one codegen unit for both implementations.
+```rust
+# #[cfg(all(feature = "zerocopy-views", any(unix, windows)))] {
+use rs_mmap::{ByteArrayExt, MmapStruct};
 
-CI tests the crate and runs strict Clippy on Rust 1.99.0 on Linux, Windows, and macOS. On Linux it also checks advisories, licenses, duplicate dependencies, and dependency sources with `cargo-deny`, and runs two bounded, coverage-guided libFuzzer targets. The stable Rust fuzz runs use `--sanitizer none`. [Check commands](https://github.com/codixor/rs-mmap/blob/v0.2.3/.github/workflows/checks.yml) Run the paired comparison with `cargo bench --locked --bench compare -- --measure`. The original Criterion byte-container benchmarks remain under `mmap_core`. [Measured results and methodology](https://github.com/codixor/rs-mmap/blob/v0.2.3/benchmarks/README.md)
+let dir = tempfile::tempdir()?;
+let path = dir.path().join("label");
+let mut label = MmapStruct::create(&path, [0u8; 16])?;
+label.set_str("Málaga")?;
+label.flush()?;
+drop(label);
+let reopened = MmapStruct::<[u8; 16]>::open(path)?;
+assert_eq!(reopened.as_slice().as_str()?, "Málaga");
+# }
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
 
-The initial commit imports only the `rs-mmap` subtree from [codixor/rust-misc at ae68abb](https://github.com/codixor/rust-misc/tree/ae68abb54c655a8fcc009123fbc31821b82435e4/rs-mmap). The standalone crate integrates [memmap2 0.9.12](https://github.com/RazrFalcon/memmap2-rs) as a dependency. Both projects use the MIT or Apache-2.0 license.
+## memmap2 compatibility
+
+On native targets, `rs_mmap::compat` re-exports memmap2 0.9.12 and permits compatible 0.9.x updates. Existing memmap2 handles keep their type identity. `ReadOnlyMmap::from(map)` adopts an immutable map, and `Mmap::<ReadWrite>::from(map)` adopts a mutable map with native flush semantics. Both preserve the mapped address. The compatibility namespace exposes memmap2's original safety contracts.
+
+```rust
+# #[cfg(any(unix, windows))] {
+use rs_mmap::{compat, ReadOnlyMmap};
+
+let mut raw = compat::MmapMut::map_anon(4)?;
+raw.copy_from_slice(b"data");
+let map = raw.make_read_only()?;
+let address = map.as_ptr();
+let shared = ReadOnlyMmap::from(map);
+assert_eq!(address, shared.as_ptr());
+# }
+# Ok::<(), std::io::Error>(())
+```
+
+## Platform support and migration from 0.2
+
+- The crate forbids unsafe Rust in first-party code. Native mapping and typed casts use the safe interfaces of memmap2 and bytemuck. On WebAssembly, `ReadOnlyMmap::from_vec`, `from_bytes`, and checked slices work in memory. File mapping returns `UnsupportedPlatform`.
+- The safe window API replaces imported Windows sections and external file-stability contracts. The original Windows repeated-window gains were measured on the 0.2.x backend. [Historical measurements](https://github.com/codixor/rs-mmap/tree/v0.2.3/benchmarks)
+- The `AsyncMmap` adapter has been removed. Opening, snapshotting, and flushing are blocking operations. Tokio applications can offload the entire operation with `spawn_blocking`.
+- Raw protection flags, live resizing, and raw-pointer NUMA binding are outside the safe API. `unstable` enables `numa` for Linux topology queries and `huge-pages` for explicit Linux anonymous allocations. Unsupported requests return errors. Serde configurations using retired options must be migrated.
+- The development toolchain is Rust 1.100.0. CI checks the minimum version, native tests, mobile and WebAssembly builds, both dependency graphs, and bounded Linux fuzz targets with AddressSanitizer.

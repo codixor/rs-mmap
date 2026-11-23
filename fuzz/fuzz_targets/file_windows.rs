@@ -15,8 +15,7 @@ fn fixture() -> &'static Fixture {
         let bytes: Vec<_> = (0..65_537_u32).map(|i| (i ^ (i >> 8)) as u8).collect();
         let mut file = tempfile::tempfile().unwrap();
         file.write_all(&bytes).unwrap();
-        // SAFETY: this process owns the file and has finished writing to it.
-        let source = unsafe { ReadOnlyFile::new(file) }.unwrap();
+        let source = ReadOnlyFile::new(file).unwrap();
         Fixture { source, bytes }
     })
 }

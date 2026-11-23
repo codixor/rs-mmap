@@ -9,6 +9,7 @@
     derive(serde::Serialize, serde::Deserialize)
 )]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MemoryAdvice {
     /// Normal access pattern (default)
     Normal,
@@ -33,24 +34,6 @@ pub enum MemoryAdvice {
     /// fault the data back in. The kernel may ignore the request.
     #[cfg(target_os = "linux")]
     PageOut,
-}
-
-impl MemoryAdvice {
-    /// Convert to platform-specific value for madvise() calls
-    #[cfg(unix)]
-    pub(crate) fn to_unix_advice(self) -> libc::c_int {
-        match self {
-            Self::Normal => libc::MADV_NORMAL,
-            Self::Random => libc::MADV_RANDOM,
-            Self::Sequential => libc::MADV_SEQUENTIAL,
-            Self::WillNeed => libc::MADV_WILLNEED,
-            Self::DontNeed => libc::MADV_DONTNEED,
-            #[cfg(target_os = "linux")]
-            Self::Cold => libc::MADV_COLD,
-            #[cfg(target_os = "linux")]
-            Self::PageOut => libc::MADV_PAGEOUT,
-        }
-    }
 }
 
 impl Default for MemoryAdvice {

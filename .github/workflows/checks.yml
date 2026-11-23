@@ -32,6 +32,14 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+  portable:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install 1.99.0 --profile minimal
+      - run: bash scripts/target-matrix.sh
+
   fuzz-and-deny:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -45,5 +53,6 @@ jobs:
       - run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked --all-features check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: cargo clippy --manifest-path fuzz/Cargo.toml --locked --all-targets -- -D warnings
-      - run: cargo fuzz run --target x86_64-unknown-linux-gnu --sanitizer none slice_views -- -runs=20000 -max_len=256 -timeout=5 -rss_limit_mb=512
-      - run: cargo fuzz run --target x86_64-unknown-linux-gnu --sanitizer none file_windows -- -runs=20000 -max_len=8 -timeout=5 -rss_limit_mb=512
+      - run: rustup toolchain install nightly-2026-10-31 --profile minimal
+      - run: cargo +nightly-2026-10-31 fuzz run --target x86_64-unknown-linux-gnu --sanitizer address slice_views -- -runs=20000 -max_len=256 -timeout=5 -rss_limit_mb=512
+      - run: cargo +nightly-2026-10-31 fuzz run --target x86_64-unknown-linux-gnu --sanitizer address file_windows -- -runs=20000 -max_len=8 -timeout=5 -rss_limit_mb=512

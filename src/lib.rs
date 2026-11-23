@@ -1,4 +1,5 @@
-#![allow(unsafe_code)]
+#![forbid(unsafe_code)]
+#![doc = include_str!("../README.md")]
 #![allow(
     clippy::borrow_as_ptr,
     clippy::cast_possible_truncation,
@@ -14,44 +15,43 @@
 )]
 
 mod advice;
-#[cfg(all(feature = "async", not(target_arch = "wasm32")))]
-mod async_mmap;
 mod builder;
 #[cfg(any(unix, windows))]
 mod read_only_file;
 #[cfg(any(unix, windows))]
 pub use read_only_file::{FileView, ReadOnlyFile};
+mod byte_field;
 mod error;
 mod file_lock;
+#[cfg(feature = "huge-pages")]
 mod huge_pages;
 #[path = "mapping.rs"]
 mod mmap;
 #[cfg(feature = "numa")]
 mod numa;
-mod platform;
-mod protection;
+pub use byte_field::ByteArrayExt;
+#[cfg(all(feature = "zerocopy-views", any(unix, windows)))]
+mod record;
+/// Native memmap2 0.9 types with their original APIs and type identity.
+#[cfg(any(unix, windows))]
+pub use memmap2 as compat;
+#[cfg(all(feature = "zerocopy-views", any(unix, windows)))]
+pub use record::MmapStruct;
 mod slice;
 #[cfg(feature = "zerocopy-views")]
 mod view;
 
 use std::{fmt, ops::Deref, sync::Arc};
 
-#[cfg(not(target_arch = "wasm32"))]
-use std::path::Path;
-
 pub use advice::MemoryAdvice;
-#[cfg(all(feature = "async", not(target_arch = "wasm32")))]
-pub use async_mmap::AsyncMmap;
 pub use builder::{HasPath, MmapOptions, NoPath};
 pub use error::MmapError;
 pub use file_lock::{FileLock, LockType};
+#[cfg(feature = "huge-pages")]
 pub use huge_pages::HugePageSize;
 pub use mmap::{CopyOnWrite, Mmap, ReadOnly, ReadWrite};
 #[cfg(feature = "numa")]
-pub use numa::{NumaBinder, NumaNode, NumaPolicy, NumaTopology};
-#[cfg(unix)]
-pub use platform::MappingMode;
-pub use protection::Protection;
+pub use numa::{NumaNode, NumaTopology};
 pub use slice::MmapSlice;
 #[cfg(feature = "zerocopy-views")]
 pub use view::ZeroCopyView;
@@ -61,7 +61,6 @@ pub type Result<T> = std::result::Result<T, MmapError>;
 
 #[derive(Clone)]
 enum Backing {
-    Mapped(Arc<Mmap<ReadOnly>>),
     Owned(Arc<[u8]>),
     #[cfg(any(unix, windows))]
     Memmap2(Arc<memmap2::Mmap>),
@@ -78,84 +77,27 @@ pub struct ReadOnlyMmap {
 }
 
 impl ReadOnlyMmap {
-    /// Opens a file and creates a shared read-only memory mapping for its
-    /// contents.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file cannot be opened or the mapping fails.
-    ///
-    /// # Safety
-    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub unsafe fn open(path: impl AsRef<Path>) -> Result<Self> {
-        // SAFETY: the caller guarantees a stable file.
-        unsafe { Self::open_options(path, 0, None) }
+    /// Opens the complete file as immutable bytes. Ordinary files are copied.
+    pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
+        Self::open_options(path, 0, None)
     }
 
-    /// Opens a file and creates a shared read-only memory mapping for its
-    /// contents.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`MmapError::UnsupportedPlatform`] on `wasm32`.
-    ///
-    /// # Safety
-    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
-    #[cfg(target_arch = "wasm32")]
-    pub unsafe fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
-        let _ = path;
-        Err(MmapError::UnsupportedPlatform)
-    }
-
-    /// Opens a read-only file mapping for the configured byte range.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MmapError`] if the file cannot be opened, the requested
-    /// mapping is invalid, or the platform does not support file-backed
-    /// mappings.
-    ///
-    /// # Safety
-    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub unsafe fn open_options(
-        path: impl AsRef<Path>,
-        offset: u64,
-        len: Option<usize>,
-    ) -> Result<Self> {
-        let mut builder = MmapOptions::new().path(path).offset(offset);
-        if let Some(len) = len {
-            builder = builder.len(len);
-        }
-        // SAFETY: the caller guarantees a stable file.
-        unsafe { builder.open() }
-    }
-
-    /// Opens a read-only file mapping for the configured byte range.
-    ///
-    /// # Errors
-    ///
-    /// Always returns [`MmapError::UnsupportedPlatform`] on `wasm32`.
-    ///
-    /// # Safety
-    /// Prevent writes and truncation until every clone and view of the mapping is dropped.
-    #[cfg(target_arch = "wasm32")]
-    pub unsafe fn open_options(
+    /// Opens a file range. An omitted length selects the remaining bytes.
+    pub fn open_options(
         path: impl AsRef<std::path::Path>,
         offset: u64,
         len: Option<usize>,
     ) -> Result<Self> {
-        let _ = (path, offset, len);
-        Err(MmapError::UnsupportedPlatform)
+        let options = MmapOptions::new().path(path).offset(offset);
+        match len {
+            Some(len) => options.len(len).open(),
+            None => options.open(),
+        }
     }
 
-    /// Wraps an existing read-only mapping in the compatibility container.
-    #[must_use]
-    pub fn from_mmap(mmap: Mmap<ReadOnly>) -> Self {
-        Self {
-            backing: Backing::Mapped(Arc::new(mmap)),
-        }
+    /// Takes ownership of a typed read-only mapping without copying.
+    pub fn from_mmap(map: Mmap<ReadOnly>) -> Self {
+        map.into_read_only()
     }
 
     /// Creates a read-only view from shared in-memory bytes.
@@ -176,7 +118,6 @@ impl ReadOnlyMmap {
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
         match &self.backing {
-            Backing::Mapped(bytes) => bytes.as_slice(),
             Backing::Owned(bytes) => bytes,
             #[cfg(any(unix, windows))]
             Backing::Memmap2(map) => map,

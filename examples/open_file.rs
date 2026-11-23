@@ -13,8 +13,7 @@ fn main() -> Result<(), rs_mmap::MmapError> {
     let path = env::temp_dir().join(format!("mmap-example-{}-{unique}.bin", process::id()));
     fs::write(&path, b"example-bytes")?;
 
-    // SAFETY: this fixture is exclusively controlled for the mapping lifetime.
-    let mapped = unsafe { MmapOptions::new().path(&path).offset(2).len(7).open() }?;
+    let mapped = MmapOptions::new().path(&path).offset(2).len(7).open()?;
     let view = mapped.slice(1..5)?;
     println!(
         "len={} bytes={:?} view={:?}",
