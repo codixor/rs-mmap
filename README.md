@@ -3,7 +3,7 @@
 A Rust crate for typed memory mappings, checked subranges, and independently owned read-only file views.
 
 ```sh
-cargo add rs-mmap@0.2.2
+cargo add rs-mmap@0.2.3
 ```
 
 ## Repeated file windows
@@ -30,7 +30,7 @@ Prevent modifications and truncation until the source and its last view have bee
 
 On Windows, callers that already own a readable file-mapping object can pass it to `unsafe { ReadOnlyFile::from_section(section, file, len)? }`. Supply the backing file and the usable byte length starting at offset zero. Views reuse the supplied object and keep the file alive.
 
-On Unix, `FileView::advise_range` accepts byte offsets relative to the view. For example, `view.advise_range(0..view.len(), MemoryAdvice::Sequential)?` hints at a forward scan. On Linux 5.4 or later, a reader can pass `MemoryAdvice::Cold` after scanning a log window to make its pages candidates for earlier reclamation. Use `PageOut` to request reclamation explicitly. The kernel acts on whole pages, may ignore hints, and can return an error for unsupported advice. [Upstream PR review](https://github.com/codixor/rs-mmap/blob/v0.2.2/docs/upstream-prs.md)
+On Unix, `FileView::advise_range` accepts byte offsets relative to the view. For example, `view.advise_range(0..view.len(), MemoryAdvice::Sequential)?` hints at a forward scan. On Linux 5.4 or later, a reader can pass `MemoryAdvice::Cold` after scanning a log window to make its pages candidates for earlier reclamation. Use `PageOut` to request reclamation explicitly. The kernel acts on whole pages, may ignore hints, and can return an error for unsupported advice. [Upstream PR review](https://github.com/codixor/rs-mmap/blob/v0.2.3/docs/upstream-prs.md)
 
 `ReadOnlyFile::with_suffix(max_len, inspect)` passes the last bytes of an immutable file to a callback. Short files yield their entire contents. Linux uses a positional read for suffixes up to 64 KiB. Larger Linux suffixes and Windows suffixes use read-only mappings.
 
@@ -42,8 +42,8 @@ On Unix, `FileView::advise_range` accepts byte offsets relative to the view. For
 
 ## Development
 
-The development toolchain is pinned to Rust 1.100.0. The crate supports Rust 1.95 or later. Local x86-64 GNU/Linux builds use Clang and LLD. Release benchmarks use fat LTO and one codegen unit for both implementations.
+The development toolchain is pinned to Rust 1.100.0. The minimum supported Rust version is 1.99. Local x86-64 GNU/Linux builds use Clang and LLD. Release benchmarks use fat LTO and one codegen unit for both implementations.
 
-Run `cargo test --locked --all-features` and `cargo clippy --locked --all-features --all-targets -- -D warnings`. Run the paired comparison with `cargo bench --locked --bench compare -- --measure`. The original Criterion byte-container benchmarks remain under `mmap_core`. [Measured results and methodology](https://github.com/codixor/rs-mmap/blob/v0.2.2/benchmarks/README.md)
+CI tests the crate and runs strict Clippy on Rust 1.99.0 on Linux, Windows, and macOS. On Linux it also checks advisories, licenses, duplicate dependencies, and dependency sources with `cargo-deny`, and runs two bounded, coverage-guided libFuzzer targets. The stable Rust fuzz runs use `--sanitizer none`. [Check commands](https://github.com/codixor/rs-mmap/blob/v0.2.3/.github/workflows/checks.yml) Run the paired comparison with `cargo bench --locked --bench compare -- --measure`. The original Criterion byte-container benchmarks remain under `mmap_core`. [Measured results and methodology](https://github.com/codixor/rs-mmap/blob/v0.2.3/benchmarks/README.md)
 
 The initial commit imports only the `rs-mmap` subtree from [codixor/rust-misc at ae68abb](https://github.com/codixor/rust-misc/tree/ae68abb54c655a8fcc009123fbc31821b82435e4/rs-mmap). The standalone crate integrates [memmap2 0.9.12](https://github.com/RazrFalcon/memmap2-rs) as a dependency. Both projects use the MIT or Apache-2.0 license.
