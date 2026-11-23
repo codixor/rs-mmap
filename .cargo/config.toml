@@ -1,4 +1,7 @@
 [build]
+rustflags = ["-C", "force-frame-pointers=no"]
+
+[target.'cfg(all(target_os = "linux", not(all(target_arch = "x86_64", target_env = "gnu"))))']
 rustflags = ["-C", "force-frame-pointers=no", "-C", "relro-level=full"]
 
 [target.x86_64-unknown-linux-gnu]

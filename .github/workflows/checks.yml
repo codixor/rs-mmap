@@ -42,7 +42,7 @@ jobs:
         with:
           tool: cargo-fuzz@0.13.2,cargo-deny@0.22.0
       - run: cargo deny --locked --all-features check
-      - run: cargo deny --manifest-path fuzz/Cargo.toml --locked --all-features check --config deny.toml
+      - run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked --all-features check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: cargo clippy --manifest-path fuzz/Cargo.toml --locked --all-targets -- -D warnings
       - run: cargo fuzz run --sanitizer none slice_views -- -runs=20000 -max_len=256 -timeout=5 -rss_limit_mb=512
