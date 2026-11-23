@@ -87,8 +87,12 @@ impl Mmap<ReadWrite> {
         offset: u64,
         length: Option<usize>,
         write_back: bool,
+        limit: usize,
     ) -> Result<Self> {
         let len = crate::read_only_file::range_len(file.metadata()?.len(), offset, length)?;
+        if len > limit {
+            return Err(MmapError::SnapshotTooLarge { len, limit });
+        }
         let mut bytes = memmap2::MmapMut::map_anon(len)?;
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut bytes)?;

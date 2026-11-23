@@ -6,13 +6,26 @@ use std::{
 };
 
 /// An open source for independent windows. Its initial length bounds every request.
-/// Ordinary files are read into owned snapshots. A concurrent write can affect
-/// bytes being read, but later writes cannot change an existing view.
+///
+/// [`new`](Self::new) maps files the OS proves immutable and copies ranges of
+/// ordinary files into owned snapshots. A concurrent write can affect bytes
+/// being read, but later writes cannot change an existing view.
+/// [`new_stable`](Self::new_stable) always maps and relies on the caller.
 pub struct ReadOnlyFile {
     file: File,
     len: u64,
+    stability: Stability,
+    max_snapshot: usize,
     #[cfg(windows)]
     cursor: std::sync::Mutex<()>,
+}
+
+/// How a source knows that its file cannot change under a mapping.
+pub(crate) enum Stability {
+    /// Map only when the OS proves immutability. Otherwise copy.
+    Verified,
+    /// The caller of an unsafe constructor promised a stable file.
+    Trusted(crate::trusted::Stable),
 }
 
 /// A window which can outlive the source and the backing file.
@@ -48,6 +61,10 @@ impl ReadOnlyFile {
     /// Captures the current length. The handle must support reading and seeking.
     /// On Windows, use a separate handle for concurrent cursor-based I/O.
     pub fn new(file: File) -> Result<Self> {
+        Self::with_stability(file, Stability::Verified)
+    }
+
+    pub(crate) fn with_stability(file: File, stability: Stability) -> Result<Self> {
         let len = file.metadata()?.len();
         if len == 0 {
             return Err(MmapError::EmptyMapping);
@@ -55,13 +72,30 @@ impl ReadOnlyFile {
         Ok(Self {
             file,
             len,
+            stability,
+            max_snapshot: crate::DEFAULT_MAX_SNAPSHOT,
             #[cfg(windows)]
             cursor: std::sync::Mutex::new(()),
         })
     }
 
+    /// Sets the largest range a view may copy. The default is
+    /// [`DEFAULT_MAX_SNAPSHOT`](crate::DEFAULT_MAX_SNAPSHOT). Larger copies
+    /// return [`MmapError::SnapshotTooLarge`]. Direct mappings are not limited.
+    #[must_use]
+    pub fn max_snapshot(mut self, limit: usize) -> Self {
+        self.max_snapshot = limit;
+        self
+    }
+
     pub(crate) fn window(&self, offset: u64, length: Option<usize>) -> Result<FileView> {
         let len = range_len(self.len, offset, length)?;
+        if let Stability::Trusted(stable) = &self.stability {
+            return Ok(FileView {
+                bytes: crate::trusted::map(stable, &self.file, offset, len)?.into(),
+                file_mapped: true,
+            });
+        }
         match memmap2::MmapOptions::new()
             .offset(offset)
             .len(len)
@@ -75,6 +109,12 @@ impl ReadOnlyFile {
             }
             Err(e) if e.not_safe() || e.not_supported() => {}
             Err(e) => return Err(io::Error::from(e).into()),
+        }
+        if len > self.max_snapshot {
+            return Err(MmapError::SnapshotTooLarge {
+                len,
+                limit: self.max_snapshot,
+            });
         }
         let mut snapshot = memmap2::MmapMut::map_anon(len)?;
         #[cfg(unix)]
@@ -116,7 +156,8 @@ impl ReadOnlyFile {
 }
 
 impl FileView {
-    /// True when memmap2 verified immutability and mapped the original file.
+    /// True when the view maps the original file: either memmap2 verified its
+    /// immutability, or the source came from [`ReadOnlyFile::new_stable`].
     pub fn is_file_mapped(&self) -> bool {
         self.file_mapped
     }

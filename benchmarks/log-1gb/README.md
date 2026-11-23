@@ -1,6 +1,6 @@
 # Reading a 1 GB log
 
-The results and reproduction commands on this page refer to the [0.2.x native backend and harness](https://github.com/codixor/rs-mmap/tree/v0.2.3). Version 0.3 snapshots ordinary file windows. Its timings have not been measured here.
+The results and reproduction commands on this page refer to the [0.2.x native backend and harness](https://github.com/codixor/rs-mmap/tree/v0.2.3). Version 0.3 snapshots ordinary file windows and maps stable files on request. Its timings have not been measured here; run `cargo bench --bench file_windows` to compare both paths with positional `std::fs` reads on your machine.
 
 ## Results
 

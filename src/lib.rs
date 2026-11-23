@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![doc = include_str!("../README.md")]
 #![allow(
     clippy::borrow_as_ptr,
@@ -29,6 +29,8 @@ mod huge_pages;
 mod mmap;
 #[cfg(feature = "numa")]
 mod numa;
+#[cfg(any(unix, windows))]
+mod trusted;
 pub use byte_field::ByteArrayExt;
 #[cfg(all(feature = "zerocopy-views", any(unix, windows)))]
 mod record;
@@ -44,7 +46,7 @@ mod view;
 use std::{fmt, ops::Deref, sync::Arc};
 
 pub use advice::MemoryAdvice;
-pub use builder::{HasPath, MmapOptions, NoPath};
+pub use builder::{DEFAULT_MAX_SNAPSHOT, HasPath, MmapOptions, NoPath};
 pub use error::MmapError;
 pub use file_lock::{FileLock, LockType};
 #[cfg(feature = "huge-pages")]

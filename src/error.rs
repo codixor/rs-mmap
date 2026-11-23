@@ -53,6 +53,16 @@ pub enum MmapError {
         /// Required alignment for the target element type.
         alignment: usize,
     },
+    /// A copied snapshot would exceed the configured limit.
+    #[error(
+        "snapshot of {len} bytes exceeds the {limit}-byte limit: read a smaller window, raise max_snapshot, or map a stable file"
+    )]
+    SnapshotTooLarge {
+        /// Bytes the snapshot would copy.
+        len: usize,
+        /// Configured snapshot limit.
+        limit: usize,
+    },
     /// Invalid mapping configuration.
     #[error("invalid configuration: {0}")]
     InvalidConfiguration(String),

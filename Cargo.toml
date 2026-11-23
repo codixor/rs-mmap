@@ -1,6 +1,6 @@
 [package]
 name = "rs-mmap"
-description = "Typed memory-mapped files and reusable read-only mapping windows"
+description = "Safe file snapshots, verified and trusted memory maps, and typed records"
 readme = "README.md"
 repository = "https://github.com/codixor/rs-mmap"
 edition = "2024"
@@ -48,8 +48,13 @@ serde-support = ["dep:serde"]
 name = "mmap_core"
 harness = false
 
+[[bench]]
+name = "file_windows"
+harness = false
+
 [lints.rust]
-unsafe_code = "forbid"
+# Denied crate-wide. src/trusted.rs is the only module allowed to opt out.
+unsafe_code = "deny"
 
 [lints.clippy]
 all = "warn"

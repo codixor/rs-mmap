@@ -48,7 +48,7 @@ impl<T: ZeroCopyView> MmapStruct<T> {
                 element_size: size,
             });
         }
-        let map = Mmap::snapshot(file, 0, Some(size), true)?;
+        let map = Mmap::snapshot(file, 0, Some(size), true, usize::MAX)?;
         map.view::<T>()?;
         Ok(Self {
             map,
