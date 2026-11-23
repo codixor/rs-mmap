@@ -92,7 +92,7 @@ impl ReadOnlyFile {
         let len = range_len(self.len, offset, length)?;
         if let Stability::Trusted(stable) = &self.stability {
             return Ok(FileView {
-                bytes: crate::trusted::map(stable, &self.file, offset, len)?.into(),
+                bytes: crate::trusted::map(stable, &self.file, offset, len)?,
                 file_mapped: true,
             });
         }

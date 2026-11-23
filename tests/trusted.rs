@@ -38,6 +38,54 @@ fn stable_views_map_the_file_and_outlive_their_source() {
 }
 
 #[test]
+fn many_stable_views_coexist_across_alignment_boundaries_and_threads() {
+    // Offsets straddle 4 KiB pages and the 64 KiB Windows allocation
+    // granularity. On Windows every view comes from one mapping object.
+    let data = pattern(400_000);
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&data).unwrap();
+    // SAFETY: this test owns the only handle and has finished writing.
+    let source = unsafe { ReadOnlyFile::new_stable(file) }.unwrap();
+    let ranges: Vec<(usize, usize)> = (0..200)
+        .map(|i| (i * 1_999 % 399_000, 1 + i * 37 % 1_000))
+        .chain([(0, 400_000), (65_535, 2), (65_536, 65_536), (399_999, 1)])
+        .collect();
+    let views: Vec<_> = ranges
+        .iter()
+        .map(|&(start, len)| source.view(start as u64, len).unwrap())
+        .collect();
+    drop(source);
+    std::thread::scope(|scope| {
+        for (chunk, expected) in views.chunks(51).zip(ranges.chunks(51)) {
+            let data = &data;
+            scope.spawn(move || {
+                for (view, &(start, len)) in chunk.iter().zip(expected) {
+                    assert!(view.is_file_mapped());
+                    assert_eq!(&**view, &data[start..start + len]);
+                }
+            });
+        }
+    });
+    let shared = views.into_iter().next_back().unwrap().into_read_only();
+    let clone = shared.clone();
+    let reader = std::thread::spawn(move || clone[0]);
+    assert_eq!(reader.join().unwrap(), data[399_999]);
+    assert_eq!(&*shared, &data[399_999..]);
+}
+
+#[test]
+fn stable_sources_reject_empty_files() {
+    let file = tempfile::tempfile().unwrap();
+    // SAFETY: this test owns the only handle and never writes to the file.
+    let source = unsafe { ReadOnlyFile::new_stable(file) };
+    assert!(matches!(source, Err(MmapError::EmptyMapping)));
+    let empty = NamedTempFile::new().unwrap();
+    // SAFETY: this test never writes to the file.
+    let mapped = unsafe { MmapOptions::new().path(empty.path()).map_stable() };
+    assert!(matches!(mapped, Err(MmapError::EmptyMapping)));
+}
+
+#[test]
 fn stable_sources_ignore_the_snapshot_limit() {
     let data = pattern(4096);
     let mut file = tempfile::tempfile().unwrap();

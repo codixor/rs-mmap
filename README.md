@@ -27,7 +27,7 @@ A snapshot larger than 64 MiB (`DEFAULT_MAX_SNAPSHOT`) returns `MmapError::Snaps
 
 ## Mapping a stable file without copying
 
-For a file that is complete and will not be rewritten, such as a closed log segment or a static asset, `ReadOnlyFile::new_stable` makes every view map the original pages. Nothing is copied, any size is accepted, and views can still outlive the source. `MmapOptions::map_stable` does the same for one range of a path.
+For a file that is complete and will not be rewritten, such as a closed log segment or a static asset, `ReadOnlyFile::new_stable` makes every view map the original pages. Nothing is copied, any size is accepted, and views can still outlive the source. On Windows the source creates one file-mapping object and maps every view from it, so repeated windows do not pay for a new mapping object each time. `MmapOptions::map_stable` does the same for one range of a path.
 
 Both are `unsafe` because the OS does not enforce the promise: the file must not be modified or truncated, by any handle or process, while a mapping is alive. Changed bytes become visible in existing views, and reading past a truncated end terminates the process. An active log does not meet this contract; follow it with `ReadOnlyFile::new` and map segments after rotation closes them.
 
@@ -112,8 +112,8 @@ assert_eq!(address, shared.as_ptr());
 
 ## Platform support and migration from 0.2
 
-- The crate denies unsafe Rust everywhere except `src/trusted.rs`, which holds the two `unsafe` stable-file constructors and their single call into memmap2. CI fails if any other module opts out. All other native mapping and typed casts use the safe interfaces of memmap2 and bytemuck. On WebAssembly, `ReadOnlyMmap::from_vec`, `from_bytes`, and checked slices work in memory. File mapping returns `UnsupportedPlatform`.
-- Imported Windows sections are gone. The 0.2 file-stability contract remains available through `new_stable` and `map_stable`, which map each view with memmap2. The original Windows repeated-window gains came from reusing one section and were measured on the 0.2.x backend. [Historical measurements](https://github.com/codixor/rs-mmap/tree/v0.2.3/benchmarks)
+- The crate denies unsafe Rust everywhere except `src/trusted.rs`, which holds the two `unsafe` stable-file constructors, their call into memmap2, and the Windows mapping-object code. CI fails if any other module opts out. All other native mapping and typed casts use the safe interfaces of memmap2 and bytemuck. On WebAssembly, `ReadOnlyMmap::from_vec`, `from_bytes`, and checked slices work in memory. File mapping returns `UnsupportedPlatform`.
+- The 0.2 file-stability contract remains available through `new_stable` and `map_stable`. On Windows a stable source again reuses one file-mapping object across its views, the design behind the repeated-window gains measured on the 0.2.x backend; 0.3 has not been re-measured on Windows. Importing an externally created section (`from_section`) is not available. [Historical measurements](https://github.com/codixor/rs-mmap/tree/v0.2.3/benchmarks)
 - The `AsyncMmap` adapter has been removed. Opening, snapshotting, and flushing are blocking operations. Tokio applications can offload the entire operation with `spawn_blocking`.
 - Raw protection flags, live resizing, and raw-pointer NUMA binding are outside the safe API. `unstable` enables `numa` for Linux topology queries and `huge-pages` for explicit Linux anonymous allocations. Unsupported requests return errors. Serde configurations using retired options must be migrated.
 - The development toolchain is Rust 1.100.0. CI checks the minimum version, native tests, mobile and WebAssembly builds, both dependency graphs, the confinement of unsafe code, and bounded Linux fuzz targets with AddressSanitizer. `cargo bench --bench file_windows` compares copied snapshots, stable mappings and positional `std::fs` reads on the current machine.

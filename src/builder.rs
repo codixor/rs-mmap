@@ -145,7 +145,7 @@ impl MmapOptions<HasPath> {
     pub fn map_readonly(self) -> Result<Mmap<ReadOnly>> {
         #[cfg(any(unix, windows))]
         {
-            self.map_with(crate::read_only_file::Stability::Verified)
+            self.map_with(|_| Ok(crate::read_only_file::Stability::Verified))
         }
         #[cfg(not(any(unix, windows)))]
         {
@@ -156,14 +156,15 @@ impl MmapOptions<HasPath> {
     #[cfg(any(unix, windows))]
     pub(crate) fn map_with(
         self,
-        stability: crate::read_only_file::Stability,
+        stability: impl FnOnce(&std::fs::File) -> Result<crate::read_only_file::Stability>,
     ) -> Result<Mmap<ReadOnly>> {
         {
             let bytes = if let Some(path) = &self.path {
                 self.check_file_options()?;
-                let source =
-                    crate::ReadOnlyFile::with_stability(std::fs::File::open(path)?, stability)?
-                        .max_snapshot(self.max_snapshot);
+                let file = std::fs::File::open(path)?;
+                let stability = stability(&file)?;
+                let source = crate::ReadOnlyFile::with_stability(file, stability)?
+                    .max_snapshot(self.max_snapshot);
                 let view = source.window(self.offset, self.len)?;
                 view.advise_range(0..view.len(), self.advice)?;
                 view.into_read_only()

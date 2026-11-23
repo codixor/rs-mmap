@@ -66,6 +66,9 @@ enum Backing {
     Owned(Arc<[u8]>),
     #[cfg(any(unix, windows))]
     Memmap2(Arc<memmap2::Mmap>),
+    /// A view of a shared Windows mapping object created for a stable file.
+    #[cfg(windows)]
+    Section(Arc<trusted::SectionView>),
 }
 
 /// Small read-only byte container backed by either a native memory map or
@@ -123,6 +126,8 @@ impl ReadOnlyMmap {
             Backing::Owned(bytes) => bytes,
             #[cfg(any(unix, windows))]
             Backing::Memmap2(map) => map,
+            #[cfg(windows)]
+            Backing::Section(view) => view.as_slice(),
         }
     }
 

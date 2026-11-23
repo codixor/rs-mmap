@@ -1,4 +1,4 @@
-//! Windowed and tail reads of one file through three paths: copied snapshots,
+//! Windowed, scattered and tail reads of one file through three paths: copied snapshots,
 //! trusted direct mappings, and positional `std::fs` reads into one buffer.
 //!
 //! `cargo bench --bench file_windows`. Set `RS_MMAP_BENCH_MIB` to change the
@@ -13,6 +13,8 @@ mod native {
 
     const WINDOW: usize = 4 << 20;
     const TAIL: usize = 64 << 10;
+    const REGION: usize = 64 << 10;
+    const REGIONS: u64 = 256;
 
     fn fixture() -> (File, u64) {
         let mib: usize = std::env::var("RS_MMAP_BENCH_MIB")
@@ -93,6 +95,37 @@ mod native {
                     offset += size as u64;
                 }
                 assert_eq!(total, expected);
+            });
+        });
+        group.finish();
+
+        // Independent, unaligned 64 KiB regions spread over the file. Each is
+        // created, scanned and dropped. On Windows the stable source maps
+        // every region from one shared mapping object.
+        let step = (len - REGION as u64) / REGIONS;
+        let offsets: Vec<u64> = (0..REGIONS).map(|i| i * step + i % 7).collect();
+        let mut group = c.benchmark_group("scattered_64kib_regions");
+        group.bench_function("snapshot", |b| {
+            b.iter(|| {
+                for &offset in &offsets {
+                    black_box(lines(&snapshot.view(offset, REGION).unwrap()));
+                }
+            });
+        });
+        group.bench_function("stable_map", |b| {
+            b.iter(|| {
+                for &offset in &offsets {
+                    black_box(lines(&stable.view(offset, REGION).unwrap()));
+                }
+            });
+        });
+        group.bench_function("std_read_at", |b| {
+            let mut buffer = vec![0; REGION];
+            b.iter(|| {
+                for &offset in &offsets {
+                    read_at(&file, &mut buffer, offset);
+                    black_box(lines(&buffer));
+                }
             });
         });
         group.finish();
