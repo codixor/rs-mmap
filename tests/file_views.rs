@@ -4,6 +4,26 @@ use rs_mmap::{MmapError, ReadOnlyFile, ReadOnlyMmap};
 use std::io::Write;
 
 #[test]
+fn suffix_reads_exact_bytes_without_moving_the_file_cursor() {
+    use std::io::{Seek, SeekFrom};
+
+    let data: Vec<_> = (0..160_000usize).map(|i| i.to_le_bytes()[0]).collect();
+    let mut file = tempfile::tempfile().unwrap();
+    file.write_all(&data).unwrap();
+    file.seek(SeekFrom::Start(19)).unwrap();
+    let mut cursor = file.try_clone().unwrap();
+    // SAFETY: the file is stable and the duplicate only queries the cursor.
+    let source = unsafe { ReadOnlyFile::new(file) }.unwrap();
+    for max_len in [0, 1, 65_535, 65_536, 65_537, data.len(), usize::MAX] {
+        let expected = &data[data.len().saturating_sub(max_len)..];
+        source
+            .with_suffix(max_len, |bytes| assert_eq!(bytes, expected))
+            .unwrap();
+        assert_eq!(cursor.stream_position().unwrap(), 19);
+    }
+}
+
+#[test]
 fn overlapping_views_outlive_their_source() {
     let mut file = tempfile::tempfile().unwrap();
     let data: Vec<_> = (0..150_000usize).map(|i| i.to_le_bytes()[0]).collect();
@@ -148,6 +168,9 @@ fn imports_a_shorter_section_and_keeps_its_file_alive() {
     // SAFETY: the section above maps this file, and the test has finished writing.
     let source =
         unsafe { ReadOnlyFile::from_section(section, metadata_file, EXTENT.into()) }.unwrap();
+    source
+        .with_suffix(13, |bytes| assert_eq!(bytes, &data[89_987..90_000]))
+        .unwrap();
     let view = source.view(65_535, 16).unwrap();
     assert!(matches!(
         source.view(89_999, 2),

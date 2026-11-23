@@ -83,6 +83,44 @@ impl ReadOnlyFile {
         })
     }
 
+    /// Reads up to the last `max_len` bytes and passes them to `inspect`.
+    /// A short file yields its entire contents. A zero limit yields an empty
+    /// slice. The file cursor is preserved.
+    ///
+    /// On Linux, suffixes up to 64 KiB use a positional read into a temporary
+    /// buffer. Larger suffixes and other platforms use a read-only view.
+    /// The slice lives for the duration of the callback.
+    ///
+    /// ```
+    /// # #[cfg(any(unix, windows))] {
+    /// use rs_mmap::ReadOnlyFile;
+    /// use std::io::Write;
+    /// let mut file = tempfile::tempfile()?;
+    /// file.write_all(b"first\nlast\n")?;
+    /// // SAFETY: this example owns the file and has finished writing.
+    /// let log = unsafe { ReadOnlyFile::new(file)? };
+    /// assert!(log.with_suffix(5, |bytes| bytes == b"last\n")?);
+    /// # }
+    /// # Ok::<(), rs_mmap::MmapError>(())
+    /// ```
+    pub fn with_suffix<T>(&self, max_len: usize, inspect: impl FnOnce(&[u8]) -> T) -> Result<T> {
+        let len = self.len.min(max_len as u64);
+        if len == 0 {
+            return Ok(inspect(&[]));
+        }
+        let offset = self.len - len;
+        // The minimum above is bounded by max_len, including on 32-bit targets.
+        let len = len as usize;
+        #[cfg(target_os = "linux")]
+        if len <= 64 * 1024 {
+            use std::os::unix::fs::FileExt;
+            let mut bytes = vec![0; len];
+            self.file.read_exact_at(&mut bytes, offset)?;
+            return Ok(inspect(&bytes));
+        }
+        Ok(inspect(&self.view(offset, len)?))
+    }
+
     /// Maps a checked range. Offsets need not be page aligned.
     pub fn view(&self, offset: u64, len: usize) -> Result<FileView> {
         if len == 0 {

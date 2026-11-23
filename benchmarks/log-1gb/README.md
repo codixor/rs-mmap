@@ -40,10 +40,12 @@ The benchmark uses a fully written 1,000,000,000-byte synthetic log containing 1
 
 ## Reproduce
 
+A full run creates one 1,000,000,000-byte temporary file. The size is explicit in the command so a routine test or the old `--measure` invocation cannot create it. Windows deletes the log when the last handle closes, including after forced termination. On Linux the log has no directory entry and both implementations reopen it through `/proc/self/fd`. The tables above were collected with the earlier named-file implementation.
+
 ```sh
-cargo +1.100.0 bench --locked --bench log_1gb -- --measure > run.csv
+cargo +1.100.0 bench --locked --bench log_1gb -- --measure-1gb > run.csv
 python scripts/summarize.py run.csv
-cargo +1.100.0 bench --locked --bench log_1gb -- --peak-rss chunked
+cargo +1.100.0 bench --locked --bench log_1gb -- --peak-rss-1gb chunked
 ```
 
 For the optional Windows and Linux peak-memory probe, choose `full`, `chunked`, or `tail`. Run each in its own process. The output fields are the case name, peak bytes immediately after setup, and peak bytes after the read.

@@ -1,13 +1,16 @@
 #[cfg(any(unix, windows))]
+#[path = "support/log_file.rs"]
+mod log_file;
+
+#[cfg(any(unix, windows))]
 mod native {
     use memchr::{memchr_iter, memrchr_iter};
     use std::fs::File;
     use std::hint::black_box;
     use std::io::{BufWriter, Write};
     use std::ops::Deref;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
     use std::time::Instant;
-    use tempfile::NamedTempFile;
 
     const FILE_SIZE: usize = 1_000_000_000;
     const RECORD_SIZE: usize = 100;
@@ -19,13 +22,15 @@ mod native {
     const ROUNDS: usize = 24;
 
     struct Fixture {
-        log: NamedTempFile,
+        // Hold the file open until all benchmark reads finish.
+        _log: File,
+        path: PathBuf,
         offsets: Vec<usize>,
         tail_checksum: u64,
     }
 
     fn fixture() -> Fixture {
-        let mut log = NamedTempFile::new().unwrap();
+        let (mut log, path) = crate::log_file::create().unwrap();
         let mut record = [b' '; RECORD_SIZE];
         let prefix = b"2026-11-23T00:00:00Z INFO request_id=";
         let fields = b" method=GET path=/api/items status=200 duration_ms=12";
@@ -49,8 +54,8 @@ mod native {
             }
             writer.flush().unwrap();
         }
-        log.as_file().sync_all().unwrap();
-        assert_eq!(log.as_file().metadata().unwrap().len(), FILE_SIZE as u64);
+        log.sync_all().unwrap();
+        assert_eq!(log.metadata().unwrap().len(), FILE_SIZE as u64);
 
         let mut seed = 0x5eed_a41b_u64;
         let offsets = (0..PICKS)
@@ -60,7 +65,8 @@ mod native {
             })
             .collect();
         Fixture {
-            log,
+            _log: log,
+            path,
             offsets,
             tail_checksum,
         }
@@ -71,6 +77,9 @@ mod native {
         type View: Deref<Target = [u8]>;
         fn open(path: &Path) -> Self::Source;
         fn view(source: &Self::Source, offset: usize, len: usize) -> Self::View;
+        fn suffix_checksum(source: &Self::Source) -> u64 {
+            tail(&Self::view(source, FILE_SIZE - WINDOW, WINDOW))
+        }
     }
     struct Ours;
     struct Upstream;
@@ -85,6 +94,9 @@ mod native {
         }
         fn view(source: &Self::Source, offset: usize, len: usize) -> Self::View {
             source.view(offset as u64, len).unwrap()
+        }
+        fn suffix_checksum(source: &Self::Source) -> u64 {
+            source.with_suffix(WINDOW, tail).unwrap()
         }
     }
     impl Backend for Upstream {
@@ -124,6 +136,7 @@ mod native {
         Full,
         Chunked,
         Tail,
+        MappedTail,
         Independent,
         Borrowed,
     }
@@ -134,6 +147,7 @@ mod native {
                 Self::Full => "count_lines_full",
                 Self::Chunked => "count_lines_4m_windows",
                 Self::Tail => "open_tail_last_100",
+                Self::MappedTail => "open_tail_last_100_mapped_control",
                 Self::Independent => "random_64k_independent",
                 Self::Borrowed => "random_64k_borrowed",
             }
@@ -141,14 +155,14 @@ mod native {
         fn iterations(self) -> usize {
             match self {
                 Self::Full | Self::Chunked => 1,
-                Self::Tail => TAIL_READS,
+                Self::Tail | Self::MappedTail => TAIL_READS,
                 Self::Independent | Self::Borrowed => PICKS,
             }
         }
         fn expected(self, f: &Fixture) -> u64 {
             match self {
                 Self::Full | Self::Chunked => RECORDS as u64,
-                Self::Tail => TAIL_READS as u64 * f.tail_checksum,
+                Self::Tail | Self::MappedTail => TAIL_READS as u64 * f.tail_checksum,
                 Self::Borrowed | Self::Independent => f
                     .offsets
                     .iter()
@@ -165,7 +179,7 @@ mod native {
     }
 
     fn batch<B: Backend>(case: Case, f: &Fixture) -> (u128, u64) {
-        let path = f.log.path();
+        let path = &f.path;
         match case {
             Case::Full => timed(|| {
                 let source = B::open(path);
@@ -179,6 +193,11 @@ mod native {
                     .sum()
             }),
             Case::Tail => timed(|| {
+                (0..TAIL_READS)
+                    .map(|_| B::suffix_checksum(&B::open(path)))
+                    .sum()
+            }),
+            Case::MappedTail => timed(|| {
                 (0..TAIL_READS)
                     .map(|_| {
                         let source = B::open(path);
@@ -259,12 +278,16 @@ mod native {
         println!("{},{},{}", case.name(), setup_peak, peak_bytes());
     }
 
-    pub fn run() {
+    pub fn run(mapped_tail_control: bool) {
         let f = fixture();
         let cases = [
             Case::Full,
             Case::Chunked,
-            Case::Tail,
+            if mapped_tail_control {
+                Case::MappedTail
+            } else {
+                Case::Tail
+            },
             Case::Independent,
             Case::Borrowed,
         ];
@@ -302,16 +325,22 @@ mod native {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--measure" || arg == "--peak-rss") {
+        eprintln!(
+            "This benchmark creates a 1 GB log. Use --measure-1gb or --peak-rss-1gb CASE to request it."
+        );
+        std::process::exit(2);
+    }
     #[cfg(any(target_os = "linux", windows))]
     if let Some(name) = std::env::args()
-        .skip_while(|arg| arg != "--peak-rss")
+        .skip_while(|arg| arg != "--peak-rss-1gb")
         .nth(1)
     {
         native::memory(&name);
         return;
     }
     #[cfg(any(unix, windows))]
-    if std::env::args().any(|arg| arg == "--measure") {
-        native::run();
+    if std::env::args().any(|arg| arg == "--measure-1gb") {
+        native::run(std::env::args().any(|arg| arg == "--mapped-tail-control"));
     }
 }
