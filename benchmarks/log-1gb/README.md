@@ -51,3 +51,17 @@ For the optional Windows and Linux peak-memory probe, choose `full`, `chunked`, 
 Each invocation warms both implementations before 24 paired rounds with alternating measurement order. Each platform ran twice on the Intel Core i9-9820X, with Windows and WSL2 runs scheduled sequentially. Both crates were built into one release-profile executable using Rust 1.100.0, fat LTO, and one codegen unit. Windows used a native NTFS temporary directory. WSL2 used Debian 13 on ext4 inside its virtual disk; the default WSL2 `/tmp` on this machine is tmpfs, so `TMPDIR` was explicitly placed under the Linux home directory. The results describe warm-cache reads on this host. Cold storage, live writers, and multi-reader contention were outside the experiment.
 
 [Windows run 1](windows-x64.csv) · [Windows run 2](windows-x64-repeat.csv) · [WSL2 run 1](linux-wsl2-x64.csv) · [WSL2 run 2](linux-wsl2-x64-repeat.csv)
+
+## After the upstream PR review
+
+On 2026-11-23, one additional run per platform exercised the same five default workloads on the same PC with Rust 1.100.0 and memmap2 0.9.12. Each value below is the median of 24 paired memmap2/rs-mmap time ratios. Values above 1 favor rs-mmap. Brackets give the distribution-free interval for the median calculated by `scripts/summarize.py`.
+
+| Workload | Windows x64 | Linux x64 (WSL2) |
+| --- | ---: | ---: |
+| Whole-map line count | 0.994 [0.971, 1.016] | 1.014 [0.997, 1.030] |
+| 4 MiB windowed line count | 1.012 [0.994, 1.027] | 0.997 [0.986, 1.014] |
+| Last 100 lines | 0.982 [0.953, 1.049] | 0.950 [0.922, 0.999] |
+| Independently mapped 64 KiB region | 1.272 [1.231, 1.319] | 1.027 [0.995, 1.035] |
+| Borrowed 64 KiB region | 0.998 [0.986, 1.015] | 0.986 [0.964, 1.011] |
+
+The Windows independent-region advantage repeated. The WSL2 tail-read result favored memmap2 in this run. The default benchmark does not exercise the new section-import or reclamation APIs. [Windows paired samples](upstream-pr-windows-x64.csv) · [WSL2 paired samples](upstream-pr-linux-wsl2-x64.csv)

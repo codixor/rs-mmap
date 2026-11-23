@@ -24,6 +24,10 @@ unsafe fn header(file: File) -> rs_mmap::Result<[u8; 4]> {
 
 Prevent modifications and truncation until the source and its last view have been dropped. If a complete file is already mapped and a borrowed range is sufficient, index its byte slice directly. Convert an existing `memmap2::Mmap` with `ReadOnlyMmap::from(map)` to share or slice the original bytes without remapping.
 
+On Windows, callers that already own a readable file-mapping object can pass it to `unsafe { ReadOnlyFile::from_section(section, file, len)? }`. Supply the backing file and the usable byte length starting at offset zero. Views reuse the supplied object and keep the file alive.
+
+On Unix, `FileView::advise_range` accepts byte offsets relative to the view. For example, `view.advise_range(0..view.len(), MemoryAdvice::Sequential)?` hints at a forward scan. On Linux 5.4 or later, a reader can pass `MemoryAdvice::Cold` after scanning a log window to make its pages candidates for earlier reclamation. Use `PageOut` to request reclamation explicitly. The kernel acts on whole pages, may ignore hints, and can return an error for unsupported advice. [Upstream PR review](docs/upstream-prs.md)
+
 ## Other APIs
 
 - `MmapOptions` creates typed read-only and read-write mappings for paths and subranges. File-backed constructors are unsafe because external file access is outside Rust's borrowing rules.
