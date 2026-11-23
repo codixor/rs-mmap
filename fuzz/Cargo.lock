@@ -149,6 +149,7 @@ dependencies = [
  "bytemuck",
  "memmap2",
  "thiserror",
+ "windows-sys",
  "zerocopy",
 ]
 

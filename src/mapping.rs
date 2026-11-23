@@ -87,8 +87,12 @@ impl Mmap<ReadWrite> {
         offset: u64,
         length: Option<usize>,
         write_back: bool,
+        limit: usize,
     ) -> Result<Self> {
         let len = crate::read_only_file::range_len(file.metadata()?.len(), offset, length)?;
+        if len > limit {
+            return Err(MmapError::SnapshotTooLarge { len, limit });
+        }
         let mut bytes = memmap2::MmapMut::map_anon(len)?;
         file.seek(SeekFrom::Start(offset))?;
         file.read_exact(&mut bytes)?;
@@ -141,7 +145,8 @@ impl Mmap<ReadWrite> {
                     crate::read_only_file::range_len(file.metadata()?.len(), start, Some(len))?;
                     file.seek(SeekFrom::Start(start))?;
                     file.write_all(&self[offset..end])?;
-                    file.sync_all()?;
+                    // The length is unchanged, so data sync makes the bytes durable.
+                    file.sync_data()?;
                 }
                 Destination::Native => self.0.bytes.flush_range(offset, len)?,
                 Destination::Private => (),
@@ -153,6 +158,64 @@ impl Mmap<ReadWrite> {
             let _ = end;
             Err(MmapError::UnsupportedPlatform)
         }
+    }
+}
+#[cfg(all(feature = "zerocopy-views", any(unix, windows)))]
+impl Mmap<ReadWrite> {
+    /// Replaces the file at `path` with the complete region through a synced
+    /// temporary file and a rename, then writes back to the new file.
+    pub(crate) fn replace_file(&self, path: &std::path::Path) -> Result<()> {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let Destination::File { handle, offset: 0 } = &self.0.destination else {
+            return Err(MmapError::UnsupportedPlatform);
+        };
+        let mut current = handle
+            .lock()
+            .map_err(|_| std::io::Error::other("file lock poisoned"))?;
+        let name = path.file_name().ok_or_else(|| {
+            MmapError::InvalidConfiguration("record path has no file name".into())
+        })?;
+        let directory = match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent,
+            _ => std::path::Path::new("."),
+        };
+        let (temporary, mut file) = loop {
+            let mut candidate = std::ffi::OsString::from(".");
+            candidate.push(name);
+            candidate.push(format!(
+                ".{}.{}.tmp",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            let candidate = directory.join(candidate);
+            match File::options()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => break (candidate, file),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e.into()),
+            }
+        };
+        let written = (|| {
+            file.set_permissions(current.metadata()?.permissions())?;
+            file.write_all(self)?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, path)
+        })();
+        if let Err(error) = written {
+            let _ = std::fs::remove_file(&temporary);
+            return Err(error.into());
+        }
+        // The replacement is in place. Later flushes must reach the new file.
+        *current = file;
+        #[cfg(unix)]
+        File::open(directory)?.sync_all()?;
+        Ok(())
     }
 }
 impl DerefMut for Mmap<ReadWrite> {

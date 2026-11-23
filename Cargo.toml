@@ -1,6 +1,6 @@
 [package]
 name = "rs-mmap"
-description = "Typed memory-mapped files and reusable read-only mapping windows"
+description = "Safe file snapshots, verified and trusted memory maps, and typed records"
 readme = "README.md"
 repository = "https://github.com/codixor/rs-mmap"
 edition = "2024"
@@ -22,6 +22,15 @@ serde = { version = "1.0.228", default-features = false, features = ["derive", "
 
 [target.'cfg(any(unix, windows))'.dependencies]
 memmap2 = "0.9.12"
+
+# One mapping object shared by every view of a stable Windows file.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_Memory",
+  "Win32_System_SystemInformation",
+] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
@@ -48,8 +57,13 @@ serde-support = ["dep:serde"]
 name = "mmap_core"
 harness = false
 
+[[bench]]
+name = "file_windows"
+harness = false
+
 [lints.rust]
-unsafe_code = "forbid"
+# Denied crate-wide. src/trusted.rs is the only module allowed to opt out.
+unsafe_code = "deny"
 
 [lints.clippy]
 all = "warn"

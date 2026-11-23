@@ -39,6 +39,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - run: rustup toolchain install 1.99.0 --profile minimal
       - run: bash scripts/target-matrix.sh
+      - run: bash scripts/check-unsafe.sh
 
   fuzz-and-deny:
     runs-on: ubuntu-24.04

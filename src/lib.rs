@@ -1,4 +1,4 @@
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 #![doc = include_str!("../README.md")]
 #![allow(
     clippy::borrow_as_ptr,
@@ -29,6 +29,8 @@ mod huge_pages;
 mod mmap;
 #[cfg(feature = "numa")]
 mod numa;
+#[cfg(any(unix, windows))]
+mod trusted;
 pub use byte_field::ByteArrayExt;
 #[cfg(all(feature = "zerocopy-views", any(unix, windows)))]
 mod record;
@@ -44,7 +46,7 @@ mod view;
 use std::{fmt, ops::Deref, sync::Arc};
 
 pub use advice::MemoryAdvice;
-pub use builder::{HasPath, MmapOptions, NoPath};
+pub use builder::{DEFAULT_MAX_SNAPSHOT, HasPath, MmapOptions, NoPath};
 pub use error::MmapError;
 pub use file_lock::{FileLock, LockType};
 #[cfg(feature = "huge-pages")]
@@ -64,6 +66,9 @@ enum Backing {
     Owned(Arc<[u8]>),
     #[cfg(any(unix, windows))]
     Memmap2(Arc<memmap2::Mmap>),
+    /// A view of a shared Windows mapping object created for a stable file.
+    #[cfg(windows)]
+    Section(Arc<trusted::SectionView>),
 }
 
 /// Small read-only byte container backed by either a native memory map or
@@ -121,6 +126,8 @@ impl ReadOnlyMmap {
             Backing::Owned(bytes) => bytes,
             #[cfg(any(unix, windows))]
             Backing::Memmap2(map) => map,
+            #[cfg(windows)]
+            Backing::Section(view) => view.as_slice(),
         }
     }
 

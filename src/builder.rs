@@ -6,6 +6,14 @@ use std::{
     path::{Path, PathBuf},
 };
 
+/// Default limit for copied snapshots: 64 MiB.
+pub const DEFAULT_MAX_SNAPSHOT: usize = 64 << 20;
+
+#[cfg(feature = "serde-support")]
+const fn default_max_snapshot() -> usize {
+    DEFAULT_MAX_SNAPSHOT
+}
+
 /// Builder without a selected source.
 #[cfg_attr(
     feature = "serde-support",
@@ -22,6 +30,9 @@ pub struct NoPath;
 pub struct HasPath;
 
 /// Selects a byte range and its access mode.
+// Deserialization only builds options. The stability contract of `map_stable`
+// is accepted by its caller when the mapping is created.
+#[cfg_attr(feature = "serde-support", allow(clippy::unsafe_derive_deserialize))]
 #[cfg_attr(
     feature = "serde-support",
     derive(serde::Serialize, serde::Deserialize),
@@ -34,6 +45,8 @@ pub struct MmapOptions<State = NoPath> {
     len: Option<usize>,
     advice: MemoryAdvice,
     prefault: bool,
+    #[cfg_attr(feature = "serde-support", serde(default = "default_max_snapshot"))]
+    max_snapshot: usize,
     #[cfg(feature = "huge-pages")]
     huge_pages: Option<crate::HugePageSize>,
     #[cfg_attr(feature = "serde-support", serde(skip))]
@@ -52,6 +65,7 @@ impl MmapOptions<NoPath> {
             len: None,
             advice: MemoryAdvice::Normal,
             prefault: false,
+            max_snapshot: DEFAULT_MAX_SNAPSHOT,
             #[cfg(feature = "huge-pages")]
             huge_pages: None,
             state: PhantomData,
@@ -70,6 +84,7 @@ impl MmapOptions<NoPath> {
             len: self.len,
             advice: self.advice,
             prefault: self.prefault,
+            max_snapshot: self.max_snapshot,
             #[cfg(feature = "huge-pages")]
             huge_pages: self.huge_pages,
             state: PhantomData,
@@ -100,6 +115,15 @@ impl MmapOptions<HasPath> {
         self.prefault = enable;
         self
     }
+    /// Sets the largest file range that may be copied into memory. The default
+    /// is [`DEFAULT_MAX_SNAPSHOT`]. A larger copy returns
+    /// [`MmapError::SnapshotTooLarge`]. Direct mappings and anonymous
+    /// allocations are not limited.
+    #[must_use]
+    pub fn max_snapshot(mut self, limit: usize) -> Self {
+        self.max_snapshot = limit;
+        self
+    }
     #[must_use]
     pub fn populate(self) -> Self {
         self.prefault(true)
@@ -116,12 +140,31 @@ impl MmapOptions<HasPath> {
         self.map_readonly().map(Mmap::into_read_only)
     }
 
+    /// Opens read-only bytes. Files the OS proves immutable are mapped.
+    /// Ordinary files are copied, up to the snapshot limit.
     pub fn map_readonly(self) -> Result<Mmap<ReadOnly>> {
         #[cfg(any(unix, windows))]
         {
+            self.map_with(|_| Ok(crate::read_only_file::Stability::Verified))
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            Err(MmapError::UnsupportedPlatform)
+        }
+    }
+
+    #[cfg(any(unix, windows))]
+    pub(crate) fn map_with(
+        self,
+        stability: impl FnOnce(&std::fs::File) -> Result<crate::read_only_file::Stability>,
+    ) -> Result<Mmap<ReadOnly>> {
+        {
             let bytes = if let Some(path) = &self.path {
                 self.check_file_options()?;
-                let source = crate::ReadOnlyFile::new(std::fs::File::open(path)?)?;
+                let file = std::fs::File::open(path)?;
+                let stability = stability(&file)?;
+                let source = crate::ReadOnlyFile::with_stability(file, stability)?
+                    .max_snapshot(self.max_snapshot);
                 let view = source.window(self.offset, self.len)?;
                 view.advise_range(0..view.len(), self.advice)?;
                 view.into_read_only()
@@ -130,10 +173,6 @@ impl MmapOptions<HasPath> {
             };
             self.touch(&bytes);
             Ok(Mmap(ReadOnly(bytes)))
-        }
-        #[cfg(not(any(unix, windows)))]
-        {
-            Err(MmapError::UnsupportedPlatform)
         }
     }
 
@@ -157,7 +196,7 @@ impl MmapOptions<HasPath> {
                     .read(true)
                     .write(write_back)
                     .open(path)?;
-                Mmap::snapshot(file, self.offset, self.len, write_back)?
+                Mmap::snapshot(file, self.offset, self.len, write_back, self.max_snapshot)?
             } else {
                 Mmap::from_anonymous(self.allocate()?)
             };
