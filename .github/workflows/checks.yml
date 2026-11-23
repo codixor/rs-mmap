@@ -45,5 +45,5 @@ jobs:
       - run: cargo deny --manifest-path fuzz/Cargo.toml --config deny.toml --locked --all-features check
       - run: cargo fmt --manifest-path fuzz/Cargo.toml --check
       - run: cargo clippy --manifest-path fuzz/Cargo.toml --locked --all-targets -- -D warnings
-      - run: cargo fuzz run --sanitizer none slice_views -- -runs=20000 -max_len=256 -timeout=5 -rss_limit_mb=512
-      - run: cargo fuzz run --sanitizer none file_windows -- -runs=20000 -max_len=8 -timeout=5 -rss_limit_mb=512
+      - run: cargo fuzz run --target x86_64-unknown-linux-gnu --sanitizer none slice_views -- -runs=20000 -max_len=256 -timeout=5 -rss_limit_mb=512
+      - run: cargo fuzz run --target x86_64-unknown-linux-gnu --sanitizer none file_windows -- -runs=20000 -max_len=8 -timeout=5 -rss_limit_mb=512
