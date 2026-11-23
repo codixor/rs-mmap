@@ -5,6 +5,8 @@ unsound = "all"
 
 [licenses]
 allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+# The fuzz-only binding includes LLVM's NCSA-licensed libFuzzer runtime.
+exceptions = [{ crate = "libfuzzer-sys", allow = ["NCSA"] }]
 
 [bans]
 multiple-versions = "warn"
