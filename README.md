@@ -122,3 +122,7 @@ Ordinary files still use safe snapshots. Version 0.4 adds the unsafe stable-file
 - `MemoryAdvice` keeps the hints the safe API can apply: `Normal`, `Random`, `Sequential` and `WillNeed`. `DontNeed`, `Cold` and `PageOut` are removed.
 - Raw protection flags, live resizing, and raw-pointer NUMA binding are outside the safe API. `unstable` enables `numa` for Linux topology queries and `huge-pages` for explicit Linux anonymous allocations. Unsupported requests return errors. Serde configurations using retired options must be migrated.
 - The development toolchain is Rust 1.100.0. CI checks the minimum version, native tests, mobile and WebAssembly builds, both dependency graphs, the confinement of unsafe code, and bounded Linux fuzz targets with AddressSanitizer. `cargo bench --bench file_windows` compares copied snapshots, stable mappings and positional `std::fs` reads on the current machine.
+
+## Releases
+
+Pushes to `main` run the checks only. To publish, push a `v<version>` tag that matches the package version in `Cargo.toml`. After the tagged commit passes the checks, the workflow publishes `rs-mmap` to crates.io and creates the GitHub release for that tag.

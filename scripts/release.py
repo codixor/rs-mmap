@@ -50,24 +50,20 @@ def inspect():
         package = tomllib.load(manifest)["package"]
     name, version = package["name"], package["version"]
     tag = f"v{version}"
-    tagged_push = os.environ["GITHUB_REF_TYPE"] == "tag"
-    if tagged_push and os.environ["GITHUB_REF_NAME"] != tag:
-        raise SystemExit(f"Push tag must match Cargo.toml ({tag})")
+    if os.environ["GITHUB_REF"] != f"refs/tags/{tag}":
+        raise SystemExit(f"Push the tag matching Cargo.toml ({tag}) to release")
 
     head = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
-    published = registry_commit(name, version)
-    target = published or head
-    if published:
-        if tagged_push and head != published:
-            raise SystemExit(f"{tag} must point to the commit published to crates.io")
-        subprocess.run(["git", "merge-base", "--is-ancestor", published, head], check=True)
-
     existing = subprocess.run(
         ["git", "rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}"],
         capture_output=True, text=True,
     )
-    if existing.returncode not in (0, 1) or (existing.returncode == 0 and existing.stdout.strip() != target):
-        raise SystemExit(f"Existing tag {tag} does not match release commit {target}")
+    if existing.returncode != 0 or existing.stdout.strip() != head:
+        raise SystemExit(f"Tag {tag} must exist and point to the checked-out commit {head}")
+
+    published = registry_commit(name, version)
+    if published is not None and published != head:
+        raise SystemExit(f"Published {name} {version} came from {published}, but {tag} points to {head}")
 
     repo = os.environ["GITHUB_REPOSITORY"]
     release = fetch(f"https://api.github.com/repos/{repo}/releases/tags/{tag}",
@@ -76,7 +72,6 @@ def inspect():
         raise SystemExit(f"An existing draft release needs review: {tag}")
     return {
         "version": version,
-        "target": target,
         "publish": str(published is None).lower(),
         "create_release": str(release is None).lower(),
         "required": str(published is None or release is None).lower(),
