@@ -1,6 +1,6 @@
 # rs-mmap
 
-Safe file snapshots, verified and trusted memory maps, and fixed-layout records for Rust. This checkout develops 0.3.0 and requires Rust 1.99. The latest published 0.2.x release is [0.2.3](https://crates.io/crates/rs-mmap/0.2.3).
+Safe file snapshots, verified and trusted memory maps, and fixed-layout records for Rust. Version 0.4.0 requires Rust 1.99 or later.
 
 ## Reading a file
 
@@ -110,10 +110,14 @@ assert_eq!(address, shared.as_ptr());
 # Ok::<(), std::io::Error>(())
 ```
 
+## Migrating from 0.3
+
+Ordinary files still use safe snapshots. Version 0.4 adds the unsafe stable-file constructors described above and a default 64 MiB snapshot limit. Applications matching on `MemoryAdvice` must remove uses of `DontNeed`, `Cold`, and `PageOut`. Use a smaller window or configure `max_snapshot` when upgrading callers that take larger snapshots.
+
 ## Platform support and migration from 0.2
 
 - The crate denies unsafe Rust everywhere except `src/trusted.rs`, which holds the two `unsafe` stable-file constructors, their call into memmap2, and the Windows mapping-object code. CI fails if any other module opts out. All other native mapping and typed casts use the safe interfaces of memmap2 and bytemuck. On WebAssembly, `ReadOnlyMmap::from_vec`, `from_bytes`, and checked slices work in memory. File mapping returns `UnsupportedPlatform`.
-- The 0.2 file-stability contract remains available through `new_stable` and `map_stable`. On Windows a stable source again reuses one file-mapping object across its views, the design behind the repeated-window gains measured on the 0.2.x backend; 0.3 has not been re-measured on Windows. Importing an externally created section (`from_section`) is not available. [Historical measurements](https://github.com/codixor/rs-mmap/tree/v0.2.3/benchmarks)
+- The 0.2 file-stability contract remains available through `new_stable` and `map_stable`. On Windows a stable source again reuses one file-mapping object across its views, the design behind the repeated-window gains measured on the 0.2.x backend; the 0.4 implementation has not been re-measured on Windows. Importing an externally created section (`from_section`) is not available. [Historical measurements](https://github.com/codixor/rs-mmap/tree/v0.2.3/benchmarks)
 - The `AsyncMmap` adapter has been removed. Opening, snapshotting, and flushing are blocking operations. Tokio applications can offload the entire operation with `spawn_blocking`.
 - `MemoryAdvice` keeps the hints the safe API can apply: `Normal`, `Random`, `Sequential` and `WillNeed`. `DontNeed`, `Cold` and `PageOut` are removed.
 - Raw protection flags, live resizing, and raw-pointer NUMA binding are outside the safe API. `unstable` enables `numa` for Linux topology queries and `huge-pages` for explicit Linux anonymous allocations. Unsupported requests return errors. Serde configurations using retired options must be migrated.
